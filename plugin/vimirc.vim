@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 Feb 2004
-" Last Change: Wed, 12 May 2004 00:41:52 +0900 (JST)
+" Last Change: Fri, 28 May 2004 16:13:17 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -233,7 +233,7 @@ endif
 let s:save_cpoptions = &cpoptions
 set cpoptions&
 
-let s:version = '0.8.6'
+let s:version = '0.8.7'
 let s:client  = 'VimIRC '.s:version
 
 "
@@ -760,8 +760,8 @@ function! s:VisitBuf_Nicks(channel, ...)
 	\					(a:0 ? a:1 : s:server))) >= 0)
 endfunction
 
-function! s:VisitBuf_Chat(nick, server)
-  return (s:SelectWindow(s:GetBufNum_Chat(a:nick, a:server)) >= 0)
+function! s:VisitBuf_Chat(nick, ...)
+  return (s:SelectWindow(s:GetBufNum_Chat(a:nick, (a:0 ? a:1 : s:server))) >= 0)
 endfunction
 
 "
@@ -1363,22 +1363,24 @@ function! s:CloseBuf_Command(force)
 	.-1
       endwhile
     endif
-    if (1 || strlen(b:query)) && strlen(getline('$'))
+    if strlen(getline('$'))
       call append('$', '')
-      $
+      call s:ExecuteSafe('keepjumps', 'normal! G0')
     endif
     call s:PostBufModify()
 
     " Don't close if in query mode
     if a:force || !(strlen(b:query) || s:singlewin)
       call s:CloseWindow(bufnum)
-      " Move the cursor back onto the channel where command mode was
-      " triggered.
-      if !(strlen(s:channel) && s:VisitBuf_Channel(s:channel))
-	call s:VisitBuf_Server()
-      endif
-      call s:HiliteLine('.')
     endif
+
+    " Move the cursor back onto the channel where command mode was triggered.
+    if strlen(s:channel)
+      call s:VisitBuf_Cha{s:IsChannel(s:channel) ? 'nnel' : 't'}(s:channel)
+    else
+      call s:VisitBuf_Server()
+    endif
+    call s:HiliteLine('.')
   endif
 endfunction
 
@@ -1491,10 +1493,10 @@ function! s:HandleKey(key)
 	\ || char == "\<C-E>" || char == "\<C-Y>"
 	\ || char == "\<C-L>"
 	\ || char == "\<C-O>" || char == "\<C-^>"
-	\ || char =~# '[-#$*+0BEGHLMNW^behjklnw]'
+	\ || char =~# '[-#$*+0;BEGHLMNW^behjklnw]'
     " One char commands
     silent! execute 'normal!' char
-  elseif char =~# '[`gmz]'
+  elseif char =~# '[`FTfgmtz]'
     " Commands which take a second char
     execute 'normal!' char.nr2char(getchar())
   elseif (char + 0) || char == "\<C-W>"
@@ -2518,6 +2520,12 @@ function! s:WalkThruChanServ(forward)
       if ($sref->{'bufnum'} >= 0)
 	{
 	  unshift(@chanserv, $sref->{'bufnum'});
+	}
+
+      if ((my $list = VIM::Eval("s:GetBufNum_List(\"$sref->{'server'}\")"))
+									>= 0)
+	{
+	  unshift(@chanserv, $list);
 	}
 
       foreach my $cref (@{$sref->{'chans'}})
