@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 Feb 2004
-" Last Change: Wed, 23 Mar 2005 15:58:26 +0900 (JST)
+" Last Change: Fri, 25 Mar 2005 02:30:40 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -291,19 +291,19 @@
 "	You can even omit '%' in the last two examples.  Note also that '%'
 "	will be expanded to the nick, if you are on a chat window.
 "
-"   6.	There is a special command (prefix) "SPLIT", which executes commands
+"   6.	There is a special command prefix "SPLIT", which executes commands
 "	after it in new windows:
 "
 "	  /split /join #chan
-"
-"	The leading slash of the following command is optional.  Also, "split"
-"	can be abbreviated like Vim's ":split".
-"
-"	You can prepend it to aliases, too:
-"
 "	  /sp freenode
 "
-"	where "freenode" should expand into "/server irc.freenode.net"
+"	NOTE: The leading slash of the following command is optional.  Note
+"	also that "split" can be abbreviated in the same manner as Vim's
+"	":split".
+"
+"	The second example shows that you can prepend it to aliases, too
+"	("freenode" should expand into "/server irc.freenode.net" in this
+"	case).
 "
 "   7.	Type shorter by utilizing aliases.  E.g.:
 "
@@ -313,11 +313,13 @@
 "	type:
 "
 "	  /sj #chan1,#chan2
+"
+"	to open the channels in separate windows.
 
 if exists('g:loaded_vimirc') || &compatible
   finish
 endif
-let s:version = '0.9.15'
+let s:version = '0.9.16'
 
 let s:debug = (s:version =~# '-devel$')
 if !s:debug
@@ -332,11 +334,6 @@ set cpoptions&
 "
 
 if 0
-
-" Suppress beeps (automatically when it gets too noisy)
-function! s:ToggleQuietMode()
-  let s:quiet = !s:quiet
-endfunction
 
 " Truncate too long buffers (upon logging)
 function! s:TruncateBuf()
@@ -537,10 +534,11 @@ endfunction
 
 function! s:ResetSysVars()
   let s:opened = 0
-  let s:inside_loop = 0
-  let s:multiwin = 0
+  let s:in_loop = 0
   let s:autocmd_disable = 0
   let s:current_changed = 0
+  let s:split = 0
+  let s:quiet = 0
 endfunction
 
 function! s:SetGlobVars()
@@ -638,23 +636,21 @@ function! s:StartVimIRC(...)
 
   " Adjust some Vim's global variables to match VimIRC's need
   call s:SetGlobVars()
+  " Set up system variables
+  call s:SetSysVars()
+
   " Remove ":VimIRC" so this won't be called twice, etc.
   call s:SetCmds()
   call s:SetAutocmds()
-  call s:SetEncoding()
+
   " Set VimIRC's cursor color
   call s:SetHlCursor()
+  call s:SetEncoding()
 
   " Initialize perl codes
   call s:PerlIRC()
   " Now it is OK to commence connections
   call s:StartServer(s:server)
-
-  " Finally, set up VimIRC's essential system variables adequately
-  " XXX: Why this must be called lastly: "s:opened" needs to remain 0 until
-  " opening the server, so that a blank buffer won't be left behind (by
-  " ":split" in OpenBuf_Server()).
-  call s:SetSysVars()
 
   call s:MainLoop()
 endfunction
@@ -675,7 +671,7 @@ function! s:QuitVimIRC()
     call s:ResetPerlVars()
 
     call s:CloseWin_IRC()
-    if s:inside_loop
+    if s:in_loop
       throw 'IMGONNAQUIT'
     endif
   finally
@@ -720,7 +716,7 @@ endfunction
 
 function! s:MainLoop()
   " NOTE: Be careful of the recursion, it may cause some obscure troubles
-  if !(!s:inside_loop && s:opened && s:IsSockOpen())
+  if !(!s:in_loop && s:opened && s:IsSockOpen())
     return
   endif
 
@@ -754,7 +750,7 @@ function! s:MainLoop()
 endfunction
 
 function! s:PreMainLoop()
-  let s:inside_loop = 1
+  let s:in_loop = 1
   " Show line-cursor, so the user can easily recognize that she is online
   call s:HiliteLine('.')
   call s:ToggleCursor(1)
@@ -763,7 +759,7 @@ endfunction
 function! s:PostMainLoop()
   call s:ToggleCursor(0)
   call s:HiliteClear()
-  let s:inside_loop = 0
+  let s:in_loop = 0
 endfunction
 
 "
@@ -881,6 +877,7 @@ function! s:SetBufNum(bufname)
   let s:bufnum_{a:bufname} = bufnr('%')
   " Need to set this buffer as `current' if it is channel/server
   call s:ChangeChanServ(0)
+  return s:bufnum_{a:bufname}
 endfunction
 
 function! s:DelBufNum(bufnum)
@@ -1005,9 +1002,7 @@ function! s:IsChannel(channel)
 endfunction
 
 function! s:IsNick(channel)
-  " To explain the latter: negate (a:channel contains any invalid character)
-  "			   `=> a:channel is composed of valid characters only
-  return (strlen(a:channel) && !(a:channel =~? '[^-0-9\[-`a-z{-}]'))
+  return (strlen(a:channel) && a:channel =~? '^=\=[-0-9\[-`a-z{-}]\+$')
 endfunction
 
 function! s:IsChanChat(channel)
@@ -1061,7 +1056,7 @@ endfunction
 function! s:OpenChanServ(channel, server, split)
   let save_server = s:server
   let s:server = a:server
-  let s:multiwin = a:split
+  let s:split = a:split
 
   if s:IsChannel(a:channel)
     call s:OpenBuf_Channel(a:channel)
@@ -1073,11 +1068,8 @@ function! s:OpenChanServ(channel, server, split)
     call s:OpenBuf_Server()
   endif
 
-  if !s:IsList(a:channel)
-    call s:ScreenBottom(1)
-  endif
   let s:server = save_server
-  let s:multiwin = 0
+  let s:split = 0
 endfunction
 
 function! s:WalkThruChanServ(forward, split)
@@ -1091,8 +1083,9 @@ function! s:WalkThruChanServ(forward, split)
 endfunction
 
 function! s:VisitBuf_ChanChat(channel, ...)
-  return s:VisitBuf_Cha{s:IsNick(a:channel)
-	\		  ? 't' : 'nnel'}(a:channel, (a:0 ? a:1 : s:server))
+  return (strlen(a:channel)
+	\ && s:VisitBuf_Cha{s:IsNick(a:channel)
+	\		    ? 't' : 'nnel'}(a:channel, (a:0 ? a:1 : s:server)))
 endfunction
 
 function! s:VisitBuf_ChanServ(channel, ...)
@@ -1185,8 +1178,11 @@ function! s:OpenBuf_Server(...)
   let loaded = (bufnum >= 0)
 
   if !(loaded && s:BufVisit(bufnum))
-    call s:CanOpenChanServ()
-    if s:multiwin
+    " Reuse channels list window, if found
+    if !s:BufVisit(s:GetBufNum_List())
+      call s:CanOpenChanServ()
+    endif
+    if s:split
       call s:SplitBuf_Channel()
     endif
 
@@ -1200,7 +1196,12 @@ function! s:OpenBuf_Server(...)
   endif
 
   if loaded
-    call setbufvar(bufnum, 'dead', 0)
+    if a:0
+      " a:1 is given only when user executed /server command, in which case we
+      " must clear the dead state of this buffer.
+      call setbufvar(bufnum, 'dead', 0)
+    endif
+    call s:ScreenBottom('$')
   endif
 endfunction
 
@@ -1209,12 +1210,12 @@ function! s:OpenBuf_List()
   let loaded = (bufnum >= 0)
 
   if !(loaded && s:BufVisit(bufnum))
-    " Open it next to the server window
+    " Open it next to, or on the server window
     if !s:BufVisit(s:GetBufNum_Server())
       call s:CanOpenChanServ()
     endif
-    if s:multiwin
-      " I don't like vertical split, which was the original behaviour
+    if s:split
+      " I don't like vertical split, which was the original behaviour, though
       call s:SplitBuf_Channel()
     endif
 
@@ -1234,7 +1235,7 @@ function! s:OpenBuf_Channel(channel)
 
   if !(loaded && s:BufVisit(bufnum))
     call s:CanOpenChanServ()
-    if s:multiwin
+    if s:split
       call s:SplitBuf_Channel()
     endif
 
@@ -1250,6 +1251,9 @@ function! s:OpenBuf_Channel(channel)
       let &l:winfixheight = 0
     endif
   endif
+  if loaded
+    call s:ScreenBottom('$')
+  endif
 endfunction
 
 function! s:OpenBuf_Chat(nick, server)
@@ -1258,7 +1262,7 @@ function! s:OpenBuf_Chat(nick, server)
 
   if !(loaded && s:BufVisit(bufnum))
     call s:CanOpenChanServ()
-    if s:multiwin
+    if s:split
       call s:SplitBuf_Channel()
     endif
 
@@ -1268,12 +1272,10 @@ function! s:OpenBuf_Chat(nick, server)
       let bufname = s:GenBufName_Chat(a:nick, a:server)
       call s:OpenBuf('edit', bufname)
       call s:InitBuf_Chat(bufname, a:nick, a:server)
-      let bufnum = bufnr('%')
     endif
   endif
-
-  if !s:autocmd_disable && s:OpenBuf_Nicks(a:nick, a:server)
-    call s:BufVisit(bufnum)
+  if loaded
+    call s:ScreenBottom('$')
   endif
 endfunction
 
@@ -1319,7 +1321,7 @@ function! s:OpenBuf_Command()
   let &equalalways = 0
 
   if !(loaded && s:BufVisit(bufnum))
-    let comd = 'belowright 1split'
+    let comd = 'belowright '.s:cmdheight.'split'
     if loaded
       call s:OpenBuf(comd, '+'.bufnum.'buffer')
     else
@@ -1394,24 +1396,23 @@ function! s:PostOpenBuf_Chat()
   endif
 endfunction
 
-function! s:SplitBuf_Channel(...)
-  if !(a:0 && s:VisitBuf_ChanChat(a:1)) && s:CanOpenChanServ()
-    let ischan = s:IsBufType_ChanChat()
-    if ischan
-      call s:CloseBuf_Nicks(b:channel, b:server)
-    endif
-    if !&equalalways
-      let &equalalways = 1
-    endif
+function! s:SplitBuf_Channel()
+  let hasnick = s:IsBufType_ChanChat()
+  if hasnick
+    call s:CloseBuf_Nicks(b:channel, b:server)
+  endif
+  if !&equalalways
+    let &equalalways = 1
+  endif
 
-    if s:OpenBuf('belowright split')
-      call s:DoWincmd('k')
-      call s:DoNormal('zb')
-      if ischan
-	call s:OpenBuf_Nicks(b:channel, b:server)
-      endif
-      call s:DoWincmd('j')
+  if s:OpenBuf('belowright split')
+    call s:DoWincmd('k')
+    call s:ScreenBottom()
+    if hasnick
+      call s:OpenBuf_Nicks(b:channel, b:server)
     endif
+    call s:DoWincmd('j')
+    " New channel will be opened here
   endif
 endfunction
 
@@ -1528,14 +1529,10 @@ function! s:DoSyntax_Info()
   syntax match VimIRCInfoBufNum "\[-\=\d\+\]"
 
   highlight link VimIRCInfoHasNew DiffChange
-  if 0
-    highlight link VimIRCInfoActive Identifier
-  else
-    execute 'highlight link VimIRCInfoActive '.s:hl_cursor
-  endif
   highlight link VimIRCInfoDead   Comment
   highlight link VimIRCInfoIndic  Ignore
   highlight link VimIRCInfoBufNum Comment
+  execute 'highlight link VimIRCInfoActive '.s:hl_cursor
 endfunction
 
 function! s:DoSyntax_Server()
@@ -1648,7 +1645,10 @@ function! s:InitBuf_Chat(bufname, nick, server)
   call s:DoSettings()
   call s:DoSyntax_Chat()
 
-  call s:SetBufNum(a:bufname)
+  let bufnum = s:SetBufNum(a:bufname)
+  if s:OpenBuf_Nicks(a:nick, a:server)
+    call s:BufVisit(bufnum)
+  endif
 endfunction
 
 function! s:InitBuf_Nicks(bufname, channel)
@@ -1767,9 +1767,9 @@ function! s:CloseBuf_Server()
     if s:log >= 2
       call s:LogBuffer(bufnum)
     endif
-    if 0
-      call s:BufClose(bufnum)
-    endif
+    " Mark this buffer as dead so that the next /SERVER invocation can close
+    " this
+    call setbufvar(bufnum, 'dead', 1)
   endif
 endfunction
 
@@ -1777,9 +1777,7 @@ function! s:CloseBuf_List()
   let bufnum = s:GetBufNum_List()
   if bufnum >= 0
     call s:CacheList(bufnum)
-    if 1
-      call s:OpenBuf_Server()
-    endif
+    call s:OpenBuf_Server()
     call s:BufClose(bufnum)
   endif
 endfunction
@@ -1824,7 +1822,9 @@ function! s:CloseBuf_Command(destbuf, purge)
   let bufnum = s:GetBufNum_Command(s:channel)
   if s:BufVisit(bufnum)
     call s:NeatenBuf_Command(a:purge)
-    call s:BufClose(bufnum)
+    if !s:IsNick(s:channel) " keep it open when chatting
+      call s:BufClose(bufnum)
+    endif
 
     if a:destbuf != bufnum
       " Move the cursor to the destined place
@@ -1833,6 +1833,11 @@ function! s:CloseBuf_Command(destbuf, purge)
       " Move the cursor back onto the channel/server where command mode was
       " (supposedly) triggered.
       call s:VisitBuf_ChanServ(s:channel)
+    endif
+    if !s:IsBufType_List()
+      " XXX: I do this to prevent channels from unexpectedly scrolling UP
+      " due to BufClose above.
+      call s:ScreenBottom()
     endif
   endif
 endfunction
@@ -1865,6 +1870,8 @@ endfunction
 
 function! s:CloseWin_What(cond)
   let retval = 1
+
+  let s:autocmd_disable = 1
   let curbuf = bufnr('%')
 
   call s:DoWincmd('b')
@@ -1882,7 +1889,9 @@ function! s:CloseWin_What(cond)
     endif
     call s:DoWincmd('W')
   endwhile
+
   call s:BufVisit(curbuf)
+  let s:autocmd_disable = 0
 
   return retval
 endfunction
@@ -2089,7 +2098,7 @@ function! s:SendLines() range
   endif
 
   try
-    let s:autocmd_disable = 1
+    let s:quiet = 1
 
     let cmdbuf = bufnr('%')
     let destbuf= cmdbuf
@@ -2113,13 +2122,13 @@ function! s:SendLines() range
       let i = i + 1
     endwhile
   catch /^IMGONNA/
-    if s:inside_loop
+    if s:in_loop
       throw v:exception
     endif
     return
   finally
     unlet! s:channel
-    let s:autocmd_disable = 0
+    let s:quiet = 0
   endtry
 
   call s:SetLastActive()
@@ -2133,7 +2142,8 @@ function! s:SendLine(line)
 
     let rx = s:GetCmdRx(comd)
     if a:line =~ rx
-      let s:multiwin = strlen(s:StrMatch(a:line, rx, '\1'))
+      let s:split = strlen(s:StrMatch(a:line, rx, '\1'))
+
       let comd = s:ExpandCmd(s:StrMatch(a:line, rx, '\2'))
       let args = s:ExpandArgs(comd, s:StrMatch(a:line, rx, '\3'))
 
@@ -2155,7 +2165,7 @@ function! s:SendLine(line)
     if s:PreDoSend(comd, args)
       call s:PostDoSend(comd)
     endif
-    let s:multiwin = 0
+    let s:split = 0
   endif
   return bufnr('%')
 endfunction
@@ -2196,19 +2206,26 @@ function! s:PreDoSend(comd, args)
 endfunction
 
 function! s:PostDoSend(comd)
-  if a:comd =~# '^\%(NAMES\|WHO\)$'
-    " When receiving a bunch of lines, visit the server window beforehand:
-    " avoid the flicker caused by cursor movement between server and channel
-    " windows
-    call s:VisitBuf_Server()
-    call s:ScreenBottom(1)
+  if a:comd =~# '^\%(JOIN\)$'
+    return
   endif
 
-  " Scroll to the bottom if user is in talkative mood
-  if a:comd =~# '^\%(ACTION\)\=$' && s:VisitBuf_ChanChat(s:channel)
-    call s:ScreenBottom(1)
-    call s:RedrawScreen(0)
+  " Move cursor to an appropriate buffer
+  if s:IsChanChat(s:channel) && a:comd !~# '^\%(INFO\|MOTD\|NAMES\|WHO\)$'
+    " If user entered the command from a channel, visit there
+    call s:VisitBuf_ChanChat(s:channel)
+    " Scroll to the bottom only if user is in talkative mood
+    if a:comd !~# '^\%(ACTION\)\=$'
+      return
+    endif
+  else
+    " When receiving a bunch of lines, visit the server window beforehand:
+    " avoid flicker caused by cursor movement between server and channel
+    " windows
+    call s:VisitBuf_Server()
   endif
+
+  call s:ScreenLine('$')
 endfunction
 
 function! s:SetLastActive()
@@ -2271,7 +2288,7 @@ function! s:SelectNickAction() range
       call s:SelectNickCTCP(nicks)
     endif
   catch /^IMGONNA/
-    if s:inside_loop
+    if s:in_loop
       throw v:exception
     endif
     return
@@ -2686,11 +2703,12 @@ endfunction
 
 function! s:StartChannel(channel, split)
   if s:Confirm_YN('Join channel '.a:channel)
+    let s:split = a:split
+
     call s:SetCurServer(b:server)
-    if a:split
-      call s:SplitBuf_Channel(a:channel)
-    endif
     call s:Send_JOIN('JOIN', a:channel)
+
+    let s:split = 0
   endif
 endfunction
 
@@ -2742,7 +2760,6 @@ function! s:DoAutoJoin()
     endif
     let autojoin = s:StrDivide(autojoin, 2)
   endwhile
-  "call s:HiliteLine('.')
 endfunction
 
 "
@@ -2877,6 +2894,11 @@ endfunction
 "
 
 function! s:NotifyNewEntry(force)
+  if s:quiet
+    " No need to do this if the message was written by user
+    return
+  endif
+
   " If the bottom line is already visible, or just forced to do so,
   if a:force || (line('.') + (winheight(0) - (winline() - 1)) >= line('$'))
     " Scroll down
@@ -2894,12 +2916,12 @@ function! s:NotifyOffline()
 	\		? 'Hitting <CR> will send out the current line'
 	\		: 'Hit <Space> to get online'
 	\	      : 'Do /SERVER to get connected'
-  if s:inside_loop
+  if s:in_loop
     if s:debug
       call s:EchoHL('You have to consider seriously why you are seeing'.
 		   \' this message', 'WarningMsg')
     endif
-    let s:inside_loop = 0
+    let s:in_loop = 0
   endif
 endfunction
 
@@ -3174,12 +3196,12 @@ endfunction
 
 " Executes normal mode commands.  Do not try to make changes with this.
 function! s:DoNormal(comd, ...)
-  let silent = (a:0 && a:1)
   if !strlen(a:comd)
     return
   endif
 
   try
+    let silent = (a:0 && a:1)
     let modifiable = &l:modifiable
     " Temporarily forbid user to tamper with the buffer.
     setlocal nomodifiable
@@ -3520,10 +3542,11 @@ function! s:DelLine() range
 endfunction
 
 function! s:OpenNewLine()
-  if strlen(getline('$'))
-    call append('$', '')
+  let lnum = '$'
+  if strlen(getline(lnum))
+    call append(lnum, '')
   endif
-  call s:ScreenBottom(0)
+  call s:ScreenBottom(lnum)
 endfunction
 
 " Buffer functions
@@ -3592,14 +3615,8 @@ function! s:WinClose(...)
   let winnum = a:0 ? a:1 : winnr()
 
   if s:WinVisit(winnum)
-    let autocmd_disable = s:autocmd_disable
-
-    let s:autocmd_disable = 1
     let &equalalways = 0
-
     let retval = s:ExecuteSilent('close!')
-
-    let s:autocmd_disable = autocmd_disable
     let &equalalways = 1
   endif
   return retval
@@ -3613,16 +3630,26 @@ function! s:WinVisit(winnum)
   return (curwin == a:winnum)
 endfunction
 
-function! s:ScreenBottom(scroll)
-  call s:ScreenLine('$')
-  call s:DoNormal('0'.(a:scroll ? 'zb' : ''))
+function! s:ScreenBottom(...)
+  if a:0
+    call s:ScreenLine(a:1)
+  endif
+  call s:DoNormal('0zb')
 endfunction
 
+if 1
 function! s:ScreenLine(lnum)
-  if 1 || line('.') != (a:lnum ? a:lnum : line(a:lnum))
-    execute a:lnum
+  execute a:lnum
+endfunction
+else
+" Secure version
+function! s:ScreenLine(lnum)
+  let lnum = a:lnum ? a:lnum : line(a:lnum)
+  if lnum > 0 && line('.') != lnum
+    execute lnum
   endif
 endfunction
+endif
 
 function! s:ScreenRefresh()
   call s:DoNormal("\<C-L>")
@@ -3705,7 +3732,7 @@ endfunction
 
 " Temporarily restores cursor for prompting
 function! s:UntoggleCursor(show)
-  if s:inside_loop
+  if s:in_loop
     call s:ToggleCursor(!a:show)
   endif
 endfunction
@@ -3956,8 +3983,7 @@ function! s:SetCurServer(server, ...)
   if a:0
     call s:SetCurChannel(a:1)
   endif
-
-  if !s:IsServer(a:server) || a:server ==# s:GetVimVar('s:server')
+  if !s:IsServer(a:server) || s:GetVimVar('s:server') ==# a:server
     return
   endif
 
@@ -3965,8 +3991,7 @@ function! s:SetCurServer(server, ...)
 {
   if (my $sref = find_server(scalar(VIM::Eval('a:server'))))
     {
-      $Current_Server = $sref;
-      VIM::DoCommand("let s:server = \"$sref->{'server'}\"");
+      set_curserver($sref->{'sock'});
     }
 }
 EOP
@@ -4131,8 +4156,8 @@ EOP
 endfunction
 
 function! s:Cmd_SERVER(server)
-  let port = 0
   let server = strlen(a:server) ? a:server : s:GetVimVar('b:server')
+  let port = 0
   let pass = ''
 
   if !strlen(server)
@@ -4159,7 +4184,6 @@ function! s:Cmd_SERVER(server)
 
   call s:OpenBuf_Server(port)
   call s:CloseWin_DeadServer()
-  call s:ScreenBottom(1)
 
   perl <<EOP
 {
@@ -4431,12 +4455,6 @@ endfunction
 
 function! s:Send_QUIT(comd, args)
   let mesg = strlen(a:args) ? a:args : s:partmsg
-  let bufnum = s:GetBufNum_Server()
-  if bufnum >= 0
-    " Mark this buffer as dead so that the next /SERVER invocation can close
-    " this
-    call setbufvar(bufnum, 'dead', 1)
-  endif
 
   perl <<EOP
 {
@@ -5202,7 +5220,7 @@ sub do_timer
     {
       if ($sref->{'conn'} & $CS_LOGIN)
 	{
-	  $Current_Server = $sref;
+	  set_curserver($sref->{'sock'});
 
 	  do_auto_ping($sref, $time);
 	  do_auto_away($sref, $time);
@@ -5232,7 +5250,7 @@ sub do_timer
     {
       update_info();
     }
-  $Current_Server = $save_cur;
+  set_curserver($save_cur->{'sock'});
 }
 
 sub do_auto_away
@@ -5508,7 +5526,7 @@ sub process_dcc_query
 	      $dcc->{'nick'}  = $from;
 	      $dcc->{'server'}= $server;
 	      $dcc->{'port'}  = $port;
-	      $dcc->{'flags'} = $DCC_CHATRECV;
+	      $dcc->{'state'} = $DCC_CHATRECV;
 	      $dcc->{'desc'}  = $desc;
 	    }
 	}
@@ -5529,7 +5547,7 @@ sub process_dcc_query
 	      $dcc->{'nick'}  = $from;
 	      $dcc->{'server'}= $server;
 	      $dcc->{'port'}  = $port;
-	      $dcc->{'flags'} = $DCC_FILERECV;
+	      $dcc->{'state'} = $DCC_FILERECV;
 	      $dcc->{'desc'}  = $desc;
 	      $dcc->{'fname'} = sprintf("%s/%s", $dccdir, do_urldecode($fname));
 	      $dcc->{'fsize'} = $size;
@@ -5541,7 +5559,7 @@ sub process_dcc_query
 		  if ((my $fsize = (-s $dcc->{'fname'})) < $size)
 		    {
 		      # Need confirmation?
-		      $dcc->{'flags'} |= ($DCC_RESUME | $DCC_QUEUED);
+		      $dcc->{'state'} |= ($DCC_RESUME | $DCC_QUEUED);
 		      $dcc->{'bytesread'} = $fsize;
 		      ctcp_send(1, $dcc->{'nick'}, "DCC RESUME %s %d %d",
 						    $desc, $port, $fsize);
@@ -5558,7 +5576,7 @@ sub process_dcc_query
 
       if ($dcc)
 	{
-	  $dcc->{'flags'} |= $DCC_QUEUED;
+	  $dcc->{'state'} |= $DCC_QUEUED;
 	  dcc_open($dcc);
 	}
     }
@@ -5583,9 +5601,9 @@ sub dcc_ask_accept_offer
   my $dcc  = shift;
   my $mesg = sprintf("%s is offering DCC %s to you.  Accept it",
 		      $dcc->{'nick'},
-		      (($dcc->{'flags'} & $DCC_TYPE) == $DCC_FILERECV
+		      (($dcc->{'state'} & $DCC_TYPE) == $DCC_FILERECV
 			? 'SEND'
-			: $DCC_TYPES[$dcc->{'flags'} & $DCC_TYPE]));
+			: $DCC_TYPES[$dcc->{'state'} & $DCC_TYPE]));
 
   vim_beep(2);
   return vim_confirm($mesg);
@@ -5604,11 +5622,11 @@ sub dcc_show_list
 	  foreach my $dcc (@{$Clients{$sref->{'server'}}})
 	    {
 	      irc_chan_line('', "DCC(LIST): %-5s %-10.10s (%s) %7u/%-7u %s",
-				$DCC_TYPES[$dcc->{'flags'} & $DCC_TYPE],
+				$DCC_TYPES[$dcc->{'state'} & $DCC_TYPE],
 				$dcc->{'nick'},
-				(($dcc->{'flags'} & $DCC_ACTIVE)
+				(($dcc->{'state'} & $DCC_ACTIVE)
 				  ? 'active'
-				  : ($dcc->{'flags'} & $DCC_QUEUED)
+				  : ($dcc->{'state'} & $DCC_QUEUED)
 				    ? 'queued'
 				    : 'closed'),
 				($dcc->{'bytessent'}
@@ -5642,7 +5660,7 @@ sub dcc_was_rejected
   if (my $dcc = find_dccclient($nick, $type, $desc))
     {
       irc_chan_line('', "DCC(%s): Offering %s to %s was rejected",
-			$DCC_TYPES[$dcc->{'flags'} & $DCC_TYPE],
+			$DCC_TYPES[$dcc->{'state'} & $DCC_TYPE],
 			$desc,
 			$nick);
       dcc_close($dcc);
@@ -5690,25 +5708,19 @@ sub dcc_put_line
 sub dcc_chat_line
 {
   my ($dcc, $itsme) = @_;
-  my $cref;
+  my $cref = find_chat("=$dcc->{'nick'}", $dcc->{'iserver'});
   my ($orgbuf, $peek);
 
-  my $save_cur = $Current_Server;
-  $Current_Server = $dcc->{'iserver'};
-
-  $cref = find_chat("=$dcc->{'nick'}", $Current_Server);
   ($orgbuf, $peek) = pre_put_line('chat', [ "=$dcc->{'nick'}",
-						$Current_Server->{'server'} ]);
+					      $dcc->{'iserver'}->{'server'} ]);
 
   dcc_put_line($dcc, $itsme);
   post_put_line($cref, $orgbuf, $peek);
 
-  unless ($Current_Server->{'away'} || $itsme)
+  unless ($dcc->{'iserver'}->{'away'} || $itsme)
     {
       vim_beep(1);
     }
-
-  $Current_Server = $save_cur;
 }
 
 sub add_dccclient
@@ -5720,7 +5732,7 @@ sub add_dccclient
 	      server	=> undef,
 	      port	=> 0,
 	      sock	=> undef,
-	      flags	=> 0,
+	      state	=> 0,
 	      desc	=> undef,
 	      fh	=> undef,
 	      fname	=> undef,
@@ -5774,7 +5786,7 @@ sub find_dccclient
 
   foreach my $dcc (@{$Clients{$Current_Server->{'server'}}})
     {
-      if ($dcc->{'flags'} & $DCC_FAILED)  # do not return closed/rejected one
+      if ($dcc->{'state'} & $DCC_FAILED)  # do not return closed/rejected one
 	{
 	  next;
 	}
@@ -5782,7 +5794,7 @@ sub find_dccclient
 	{
 	  next;
 	}
-      if ($type && ($dcc->{'flags'} & $DCC_TYPE) != $type)
+      if ($type && ($dcc->{'state'} & $DCC_TYPE) != $type)
 	{
 	  next;
 	}
@@ -5837,16 +5849,16 @@ sub dcc_init_listen
     {
       del_dccclient($dcc);
       irc_chan_line('', "DCC(%s): Failed in opening socket: %s",
-			$DCC_TYPES[$dcc->{'flags'} & $DCC_TYPE], $!);
+			$DCC_TYPES[$dcc->{'state'} & $DCC_TYPE], $!);
       return;
     }
 
   $dcc->{'port'} = $port ? $port : $dcc->{'sock'}->sockport();
 
-  if (($dcc->{'flags'} & $DCC_TYPE) == $DCC_FILESEND)
+  if (($dcc->{'state'} & $DCC_TYPE) == $DCC_FILESEND)
     {
       ctcp_send(1, $dcc->{'nick'}, "DCC %s %s %lu %u %ld",
-				    $DCC_TYPES[$dcc->{'flags'} & $DCC_TYPE],
+				    $DCC_TYPES[$dcc->{'state'} & $DCC_TYPE],
 				    $dcc->{'desc'},
 				    $local,
 				    $dcc->{'port'},
@@ -5855,7 +5867,7 @@ sub dcc_init_listen
   else
     {
       ctcp_send(1, $dcc->{'nick'}, "DCC %s chat %lu %u",
-				    $DCC_TYPES[$dcc->{'flags'} & $DCC_TYPE],
+				    $DCC_TYPES[$dcc->{'state'} & $DCC_TYPE],
 				    $local,
 				    $port);
     }
@@ -5870,7 +5882,7 @@ sub dcc_i_accept
   unless ($sock)
     {
       irc_chan_line('', "DCC(%s): Could not accept incoming connect from %s: %s",
-			$DCC_TYPES[$dcc->{'flags'} & $DCC_TYPE],
+			$DCC_TYPES[$dcc->{'state'} & $DCC_TYPE],
 			$dcc->{'nick'},
 			$!);
       dcc_close($dcc);
@@ -5882,28 +5894,28 @@ sub dcc_i_accept
   $dcc->{'sock'} = $sock;
   $dcc->{'server'} = $sock->peerhost();
   conn_watchin($dcc);
-  $dcc->{'flags'} &= ~$DCC_QUEUED;
-  $dcc->{'flags'} |= $DCC_ACTIVE;
+  $dcc->{'state'} &= ~$DCC_QUEUED;
+  $dcc->{'state'} |= $DCC_ACTIVE;
 
   irc_chan_line('', "DCC(%s): Connection with %s established",
-		    $DCC_TYPES[$dcc->{'flags'} & $DCC_TYPE],
+		    $DCC_TYPES[$dcc->{'state'} & $DCC_TYPE],
 		    $dcc->{'nick'});
 
-  if (($dcc->{'flags'} & $DCC_TYPE) == $DCC_FILESEND)
+  if (($dcc->{'state'} & $DCC_TYPE) == $DCC_FILESEND)
     {
       # FIXME: it blocks
       #conn_watchout($dcc);
       dcc_send_file($dcc);
     }
-  elsif (($dcc->{'flags'} & $DCC_TYPE) == $DCC_CHATSEND)
+  elsif (($dcc->{'state'} & $DCC_TYPE) == $DCC_CHATSEND)
     {
       # Drop the `send' flag off
-      $dcc->{'flags'} = ($DCC_CHATRECV | $DCC_ACTIVE);
+      $dcc->{'state'} = ($DCC_CHATRECV | $DCC_ACTIVE);
     }
 
-  if (($dcc->{'flags'} & $DCC_TYPE) == $DCC_CHATRECV)
+  if (($dcc->{'state'} & $DCC_TYPE) == $DCC_CHATRECV)
     {
-      add_chat("=$dcc->{'nick'}", $dcc->{'iserver'});
+      vim_open_chat("=$dcc->{'nick'}", $dcc->{'iserver'}->{'server'});
     }
 }
 
@@ -5913,10 +5925,10 @@ sub dcc_they_accept
 
   if (conn_open($dcc))
     {
-      $dcc->{'flags'} &= ~$DCC_QUEUED;
-      $dcc->{'flags'} |= $DCC_ACTIVE;
+      $dcc->{'state'} &= ~$DCC_QUEUED;
+      $dcc->{'state'} |= $DCC_ACTIVE;
 
-      if (($dcc->{'flags'} & $DCC_TYPE) == $DCC_CHATRECV)
+      if (($dcc->{'state'} & $DCC_TYPE) == $DCC_CHATRECV)
 	{
 	  add_chat("=$dcc->{'nick'}", $dcc->{'iserver'});
 	}
@@ -5926,7 +5938,7 @@ sub dcc_they_accept
   else
     {
       irc_chan_line('', "DCC(%s): Could not initialize connection with %s: %s",
-			$DCC_TYPES[$dcc->{'flags'} & $DCC_TYPE],
+			$DCC_TYPES[$dcc->{'state'} & $DCC_TYPE],
 			$dcc->{'nick'}, $!);
       del_dccclient($dcc);
     }
@@ -5936,21 +5948,21 @@ sub dcc_open
 {
   my $dcc = shift;
 
-  unless ($dcc->{'flags'})
+  unless ($dcc->{'state'})
     {
       # Huh?
       del_dccclient($dcc);
       return;
     }
 
-  if (	 (($dcc->{'flags'} & $DCC_TYPE) == $DCC_FILESEND)
-      || (($dcc->{'flags'} & $DCC_TYPE) == $DCC_CHATSEND))
+  if (	 (($dcc->{'state'} & $DCC_TYPE) == $DCC_FILESEND)
+      || (($dcc->{'state'} & $DCC_TYPE) == $DCC_CHATSEND))
     {
       dcc_init_listen($dcc);
     }
   else
     {
-      if (($dcc->{'flags'} & $DCC_RESUME) || dcc_ask_accept_offer($dcc))
+      if (($dcc->{'state'} & $DCC_RESUME) || dcc_ask_accept_offer($dcc))
 	{
 	  dcc_they_accept($dcc);
 	}
@@ -5971,8 +5983,8 @@ sub dcc_close
   # XXX: Delete it by default?  Or should we wait a few seconds?
   if (!defined($destroy) || $destroy)
     {
-      if (   (($dcc->{'flags'} & $DCC_TYPE) == $DCC_CHATRECV)
-	  || (($dcc->{'flags'} & $DCC_TYPE) == $DCC_CHATSEND))
+      if (   (($dcc->{'state'} & $DCC_TYPE) == $DCC_CHATRECV)
+	  || (($dcc->{'state'} & $DCC_TYPE) == $DCC_CHATSEND))
 	{
 	  vim_close_chat("=$dcc->{'nick'}", $dcc->{'iserver'}->{'server'});
 	  del_chat("=$dcc->{'nick'}", $dcc->{'iserver'});
@@ -5981,7 +5993,7 @@ sub dcc_close
     }
   else
     {
-      $dcc->{'flags'} &= ~$DCC_ACTIVE;
+      $dcc->{'state'} &= ~$DCC_ACTIVE;
     }
 }
 
@@ -5990,7 +6002,7 @@ sub dcc_i_resume
   my ($nick, $desc, $port, $resume) = @_;
   my $dcc = find_dccclient($nick, $DCC_FILERECV, $desc);
 
-  if ($dcc && ($dcc->{'flags'} & $DCC_QUEUED))
+  if ($dcc && ($dcc->{'state'} & $DCC_QUEUED))
     {
       dcc_open($dcc);
     }
@@ -6026,7 +6038,7 @@ sub dcc_recv_file
 	  return;
 	}
 
-      if ($dcc->{'flags'} & $DCC_RESUME)
+      if ($dcc->{'state'} & $DCC_RESUME)
 	{
 	  sysopen($dcc->{'fh'}, $dcc->{'fname'}, O_BINARY|O_WRONLY|O_APPEND);
 	}
@@ -6157,7 +6169,7 @@ sub dcc_close_filetransfer
   my $dcc = shift;
 
   irc_chan_line('', "DCC(%s): Transfer of %s with %s completed (%d/%d)",
-		    $DCC_TYPES[$dcc->{'flags'} & $DCC_TYPE],
+		    $DCC_TYPES[$dcc->{'state'} & $DCC_TYPE],
 		    $dcc->{'desc'},
 		    $dcc->{'nick'},
 		    ($dcc->{'bytessent'}
@@ -6203,7 +6215,7 @@ sub dcc_send_chat
   my ($nick, $mesg) = @_;
   my $dcc = find_dccclient($nick, $DCC_CHATRECV);
 
-  if ($dcc->{'flags'} & $DCC_ACTIVE)
+  if ($dcc->{'state'} & $DCC_ACTIVE)
     {
       if ($ENC_VIM && $ENC_IRC)
 	{
@@ -6231,7 +6243,7 @@ sub dcc_check
 
   if ($write)
     {
-      if (($dcc->{'flags'} & $DCC_TYPE) == $DCC_FILESEND)
+      if (($dcc->{'state'} & $DCC_TYPE) == $DCC_FILESEND)
 	{
 	  # We don't take much care about user acknowledgement
 	  dcc_send_file($dcc);
@@ -6239,24 +6251,24 @@ sub dcc_check
     }
   else
     {
-      if ((    (($dcc->{'flags'} & $DCC_TYPE) == $DCC_FILESEND)
-	    || (($dcc->{'flags'} & $DCC_TYPE) == $DCC_CHATSEND))
-	  && ($dcc->{'flags'} & $DCC_QUEUED))
+      if ((    (($dcc->{'state'} & $DCC_TYPE) == $DCC_FILESEND)
+	    || (($dcc->{'state'} & $DCC_TYPE) == $DCC_CHATSEND))
+	  && ($dcc->{'state'} & $DCC_QUEUED))
 	{
 	  dcc_i_accept($dcc);
 	}
       else
 	{
-	  if (($dcc->{'flags'} & $DCC_TYPE) == $DCC_FILERECV)
+	  if (($dcc->{'state'} & $DCC_TYPE) == $DCC_FILERECV)
 	    {
 	      dcc_recv_file($dcc);
 	    }
-	  elsif (($dcc->{'flags'} & $DCC_TYPE) == $DCC_FILESEND)
+	  elsif (($dcc->{'state'} & $DCC_TYPE) == $DCC_FILESEND)
 	    {
 	      # Pity we have to wait for a user ack before sending out
 	      dcc_recv_ack($dcc);
 	    }
-	  elsif (($dcc->{'flags'} & $DCC_TYPE) == $DCC_CHATRECV)
+	  elsif (($dcc->{'state'} & $DCC_TYPE) == $DCC_CHATRECV)
 	    {
 	      # MEMO: `send' flag must have already been dropped off
 	      dcc_recv_chat($dcc);
@@ -6308,7 +6320,7 @@ sub cmd_dcc
   elsif ($type eq 'GET')
     {
       $dcc = find_dccclient($nick, $DCC_FILERECV, $desc);
-      if ($dcc && ($dcc->{'flags'} & $DCC_ACTIVE))
+      if ($dcc && ($dcc->{'state'} & $DCC_ACTIVE))
 	{
 	  return;
 	}
@@ -6327,7 +6339,7 @@ sub cmd_dcc
 	      my ($fname) = ($desc =~ m#^(?:.*/)?(.+)$#);
 
 	      $dcc->{'nick'}  = $nick;
-	      $dcc->{'flags'} = $DCC_FILESEND;
+	      $dcc->{'state'} = $DCC_FILESEND;
 	      $dcc->{'desc'}  = do_urlencode($fname);
 	      $dcc->{'fname'} = $desc;
 	      $dcc->{'fsize'} = (-s $desc);
@@ -6349,26 +6361,24 @@ sub cmd_dcc
 	      if ($dcc = add_dccclient())
 		{
 		  $dcc->{'nick'} = $nick;
-		  $dcc->{'flags'}= $DCC_CHATSEND;
+		  $dcc->{'state'}= $DCC_CHATSEND;
 		  $dcc->{'desc'} = lc($type);
+
+		  add_chat("=$dcc->{'nick'}", $dcc->{'iserver'});
 		}
-	    }
-	  if ($dcc)
-	    {
-	      vim_open_chat("=$nick", $dcc->{'iserver'}->{'server'});
 	    }
 	}
     }
 
   if ($dcc)
     {
-      if ($dcc->{'flags'} & $DCC_QUEUED)
+      if ($dcc->{'state'} & $DCC_QUEUED)
 	{
 	  dcc_they_accept($dcc);
 	}
-      elsif (!($dcc->{'flags'} & $DCC_ACTIVE))
+      elsif (!($dcc->{'state'} & $DCC_ACTIVE))
 	{
-	  $dcc->{'flags'} |= $DCC_QUEUED;
+	  $dcc->{'state'} |= $DCC_QUEUED;
 	  dcc_open($dcc);
 	}
     }
@@ -7391,6 +7401,10 @@ sub parse_number
 	    }
 	}
     }
+  elsif ($comd == 371 || $comd == 374)
+    {
+      irc_chan_line('', "INFO: %s", $mesg);
+    }
   elsif ($comd == 372 || $comd == 375)	# RPL_MOTD/RPL_MOTDSTART
     {
       unless ($Current_Server->{'conn'} & $CS_RECON)
@@ -7970,11 +7984,6 @@ sub vim_peekbuf
 sub vim_notifyentry
 {
   VIM::DoCommand('call s:NotifyNewEntry(0)');
-}
-
-sub vim_redraw
-{
-  VIM::DoCommand('redraw');
 }
 
 EOP
