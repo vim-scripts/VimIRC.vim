@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 Feb 2004
-" Last Change: Sun, 18 Apr 2004 00:06:39 +0900 (JST)
+" Last Change: Mon, 19 Apr 2004 10:10:50 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -183,12 +183,12 @@
 "   Done:
 "   - command-line history (?)
 "   - separate listing of channels with sorting facilities
-"   - netsplit detection (?)
 "   - auto reconnect/rejoin
 "   - ctcp, including dcc stuffs (well, mostly)
 "   - timer (it hasn't been in todo list though)
 "     - auto-away
 "   - logging
+"   - netsplit detection (?)
 "
 " Tips:
 "   1.	If you see extreme slowness in vim startup time due to this plugin,
@@ -206,7 +206,7 @@ endif
 let s:save_cpoptions = &cpoptions
 set cpoptions&
 
-let s:version = '0.8'
+let s:version = '0.8.1'
 let s:client  = 'VimIRC '.s:version
 " Set this to zero when releasing, which I'll occasionally forget, for sure
 let s:debug = 0
@@ -686,7 +686,7 @@ function! s:VisitBuf_Chat(nick, server)
   return (s:SelectWindow(s:GetBufNum_Chat(a:nick, a:server)) >= 0)
 endfunction
 
-function! s:EnterChannel(split)
+function! s:EnterChanServ(split)
   let rx = '^\s*[-+]\=\[-\=\d\+\]\(\S\+\)\%(\s\+\(\S\+\)\)\=$'
   let line = getline('.')
   if line =~ rx
@@ -737,9 +737,7 @@ function! s:PostOpenBuf_Channel()
   let server  = getbufvar(abuf, 'server')
   let orgbuf  = bufnr('%')
   if strlen(channel) && strlen(server)
-    if s:OpenBuf_Nicks(channel, server) && s:IsBufEmpty()
-      call s:Send_NAMES('NAMES', channel)
-    endif
+    call s:OpenBuf_Nicks(channel, server)
     call s:SelectWindow(orgbuf)
     if s:singlewin
       call s:ResetChanServ(server, channel)
@@ -927,9 +925,9 @@ function! s:OpenBuf_Command()
     let bufname = s:GenBufName_Command(s:server, channel)
     call s:OpenBuf(comd, bufname)
     call s:InitBuf_Command(bufname, channel)
-  endif
-  if chattin
-    let b:query = channel
+    if chattin
+      let b:query = channel
+    endif
   endif
   call s:SetCommandMode(channel)
 
@@ -1078,8 +1076,8 @@ function! s:InitBuf_Info(bufname)
   call s:DoSettings()
   call s:DoHilite_Info()
   setlocal nowrap
-  nnoremap <buffer> <silent> <CR>	:call <SID>EnterChannel(0)<CR>
-  nnoremap <buffer> <silent> <C-W><CR>	:call <SID>EnterChannel(1)<CR>
+  nnoremap <buffer> <silent> <CR>	:call <SID>EnterChanServ(0)<CR>
+  nnoremap <buffer> <silent> <C-W><CR>	:call <SID>EnterChanServ(1)<CR>
   call s:SetBufNum(a:bufname, bufnr('%'))
 endfunction
 
@@ -1261,8 +1259,9 @@ function! s:CloseBuf_Command(force)
     call s:BufTrim()
     " Remove duplicates, if any
     if line('$') > 1
+      let lastline = getline('$')
       call s:ExecuteSafe('keepjumps', 'normal! G$')
-      while search('^\V'.getline('$').'\$', 'w') && line('.') != line('$')
+      while s:SearchLine(lastline) && line('.') != line('$')
 	delete _
 	.-1
       endwhile
@@ -1331,7 +1330,6 @@ endfunction
 
 function! s:HandleKey(key)
   let char   = nr2char(a:key)
-  let oldwin = winnr()
 
   match none
   " TODO: Make some mappings user-configurable
@@ -1376,7 +1374,7 @@ function! s:HandleKey(key)
     call s:CmdSearch(char)
   elseif char == "\<CR>"
     if s:IsBufInfo()
-      call s:EnterChannel(0)
+      call s:EnterChanServ(0)
     elseif s:IsBufCommand()
       call s:SendLine(1)
     elseif s:IsBufList()
@@ -1418,7 +1416,7 @@ function! s:HandleKey(key)
     endwhile
     if comd == "\<C-W>\<CR>"
       if s:IsBufInfo()
-	call s:EnterChannel(1)
+	call s:EnterChanServ(1)
       endif
     else
       silent! execute 'normal!' comd
@@ -1459,83 +1457,81 @@ function! s:SendLine(loop)
   let comd = ''
   let args = ''
 
-  if line[0] == '/'
-    let rx = '^/\(\S\+\)\%(\s\+\(.\+\)\)\=$'
-    if line =~ rx
-      " TODO: Allow abbreviated forms of commands
-      let comd = toupper(substitute(line, rx, '\1', ''))
-      let args = substitute(line, rx, '\2', '')
+  let rx = '^/\(\a\+\)\%(\s\+\(.\+\)\)\=$'
+  if line =~ rx
+    " TODO: Allow abbreviated forms of commands
+    let comd = toupper(s:StrMatched(line, rx, '\1'))
+    let args = s:StrMatched(line, rx, '\2')
 
-      " Accept aliases
-      if comd =~# '^\%(MSG\|QUERY\)$'
-	if comd ==# 'QUERY'
-	  " Just entering/quitting query mode, not sending.
-	  if strlen(args)
-	    call s:StartChat(args)
-	    return
-	  else
-	    call s:CloseBuf_Chat(b:query, s:server)
-	    let b:query = ''
-	  endif
-	endif
-	let comd = 'PRIVMSG'
-      elseif comd =~# '^\%(ME\)$'
-	let comd = 'ACTION'
-	let args = (strlen(b:query) ? b:query : b:channel).' '.args
-      elseif comd =~# '^\%(\%(RE\)\=CONNECT\)$'
-	let comd = 'SERVER'
-      elseif comd =~# '^\%(LEAVE\)$'
-	let comd = 'PART'
-      elseif comd =~# '^\%(EXIT\)$'
-	let comd = 'QUIT'
-      elseif comd =~# '^\%(NICKS\)$'
-	let comd = 'NAMES'
-      endif
-
-      if strlen(args)
-	" This is only for removing a leading colon which user (unnecessarily)
-	" appended to the MESSAGE and adding back!  Silly and redundant
-	"
-	" Commands with the following form:
-	"   COMMAND [MESSAGE]
-	if comd =~# '^\%(AWAY\|QUIT\|WALLOPS\)$'
-	  let rx = '^:\=\(.\+\)$'
-	  if args =~ rx
-	    let args = substitute(args, rx, ':\1', '')
-	  endif
-	elseif comd =~# '^\%(USERHOST\|ISON\)$'
-	  " User might delimit targets with commas
-	  let args = s:StrCompress(substitute(args, ',', ' ', 'g'))
+    " Accept aliases
+    if comd =~# '^\%(MSG\|QUERY\)$'
+      if comd ==# 'QUERY'
+	" Just entering/quitting query mode, not sending.
+	if strlen(args)
+	  return s:StartChat(args)
 	else
-	  let rx = ''
-	  if comd =~# '^\%(PART\|TOPIC\|PRIVMSG\|NOTICE\|SQU\%(ERY\|IT\)\|KILL\|ACTION\)$'
-	    " COMMAND TARGET [MESSAGE]
-	    let rx = '^\(\S\+\)\s\+:\=\(.\+\)$'
-
-	    " If user ommitted channels, supply the current one
-	    if comd =~# '^\%(PART\|TOPIC\)$'
-		  \ && !s:IsChannel(matchstr(args, '^\S\+'))
-		  \ && strlen(s:channel)
-	      let args = s:channel.(strlen(args) ? ' '.args : '')
-	    endif
-	  elseif comd =~# '^\%(KICK\)$'
-	    " COMMAND CHANNEL USER [MESSAGE]
-	    let rx = '^\(\S\+\s\+\S\+\)\s\+:\=\(.\+\)$'
-	  endif
-	  if strlen(rx) && args =~ rx
-	    let args = substitute(args, rx, '\1', '').' :'.
-		  \substitute(args, rx, '\2', '')
-	  endif
+	  call s:CloseBuf_Chat(b:query, s:server)
 	endif
       endif
+      let comd = 'PRIVMSG'
+    elseif comd =~# '^\%(ME\)$'
+      let comd = 'ACTION'
+      let args = (strlen(b:query) ? b:query : b:channel).' '.args
+    elseif comd =~# '^\%(\%(RE\)\=CONNECT\)$'
+      let comd = 'SERVER'
+    elseif comd =~# '^\%(LEAVE\)$'
+      let comd = 'PART'
+    elseif comd =~# '^\%(EXIT\)$'
+      let comd = 'QUIT'
+    elseif comd =~# '^\%(NICKS\)$'
+      let comd = 'NAMES'
+    endif
 
-      if comd ==# 'SET'
-	call s:CmdSet(args)
-      elseif comd ==# 'HELP'
-	call s:PrintHelp()
-      elseif comd ==# 'SERVER'
-	call s:CmdServer(args)
-      elseif s:IsConnected(s:server)
+    if strlen(args)
+      " This is only for removing a leading colon which user (unnecessarily)
+      " appended to the MESSAGE and adding back!  Silly and redundant
+      "
+      " Commands with the following form:
+      "   COMMAND [MESSAGE]
+      if comd =~# '^\%(AWAY\|QUIT\|WALLOPS\)$'
+	let rx = '^:\=\(.\+\)$'
+	if args =~ rx
+	  let args = substitute(args, rx, ':\1', '')
+	endif
+      elseif comd =~# '^\%(USERHOST\|ISON\)$'
+	" User might delimit targets with commas
+	let args = s:StrCompress(substitute(args, ',', ' ', 'g'))
+      else
+	let rx = ''
+	if comd =~# '^\%(PART\|TOPIC\|PRIVMSG\|NOTICE\|SQU\%(ERY\|IT\)\|KILL\|ACTION\)$'
+	  " COMMAND TARGET [MESSAGE]
+	  let rx = '^\(\S\+\)\s\+:\=\(.\+\)$'
+
+	  " If user ommitted channels, supply the current one
+	  if comd =~# '^\%(PART\|TOPIC\)$'
+		\ && !s:IsChannel(matchstr(args, '^\S\+'))
+		\ && strlen(s:channel)
+	    let args = s:channel.(strlen(args) ? ' '.args : '')
+	  endif
+	elseif comd =~# '^\%(KICK\)$'
+	  " COMMAND CHANNEL USER [MESSAGE]
+	  let rx = '^\(\S\+\s\+\S\+\)\s\+:\=\(.\+\)$'
+	endif
+	if strlen(rx) && args =~ rx
+	  let args = substitute(args, rx, '\1', '').' :'.
+		\substitute(args, rx, '\2', '')
+	endif
+      endif
+    endif
+
+    if comd ==# 'SET'
+      call s:CmdSet(args)
+    elseif comd ==# 'HELP'
+      call s:PrintHelp()
+    elseif comd ==# 'SERVER'
+      call s:CmdServer(args)
+    else
+      if s:IsConnected(s:server)
 	if exists('*s:Send_{comd}')
 	  call s:Send_{comd}(comd, args)
 	else
@@ -1544,8 +1540,6 @@ function! s:SendLine(loop)
       else
 	call s:PromptKey('Do /SERVER first to get connected', 'WarningMsg')
       endif
-    else
-      call s:PreSendMSG(line)
     endif
   elseif strlen(line)
     call s:PreSendMSG(line)
@@ -1753,6 +1747,9 @@ function! s:LogBuffer(bufnum)
 	\ && (s:SelectWindow(a:bufnum) >= 0
 	\     || s:OpenBuf('split', '+'.a:bufnum.'buffer'))
 	\ && !s:IsBufEmpty()
+    let save_cpoptions = &cpoptions
+    set cpoptions-=A
+
     let range = '%'
     if exists('b:lastsave')
       if b:lastsave >= line('$')
@@ -1762,11 +1759,18 @@ function! s:LogBuffer(bufnum)
     endif
 
     let logfile = s:logdir.'/'.s:GenFName_Log()
+    " If the file is loaded in another buffer, unload it
+    if bufloaded(logfile) && bufnr(logfile) != bufnr('%')
+      execute 'bunload!' logfile
+    endif
+
     execute 'redir >>' logfile
     silent echo '(Logged at' s:GetTime(0).")\n"
     redir END
     silent! execute range.'write! >>' logfile
+
     let b:lastsave = line('$')
+    let &cpoptions = save_cpoptions
   endif
 endfunction
 
@@ -1864,7 +1868,7 @@ function! s:EchoHL(mesg, hlname)
 endfunction
 
 function! s:SearchLine(line)
-  return strlen(a:line) ? search('^\V'.a:line.'\$', 'w') : 0
+  return strlen(a:line) ? search('^\m'.escape(a:line, '*^$.~\').'$', 'w') : 0
 endfunction
 
 function! s:GetEnv(var)
@@ -2180,11 +2184,11 @@ function! s:SortSelect()
     let cmp = 'topic'
   endif
 
-  let oldline = getline('.')
+  let orglin = getline('.')
   call s:PreBufModify()
   call s:SortList(cmp, (s:GetVimVar('b:sortdir') + 0))
   call s:PostBufModify()
-  call search('^\V'.oldline.'\$', 'w')
+  call s:SearchLine(orglin)
 endfunction
 
 function! s:SortReverse()
@@ -2269,11 +2273,11 @@ function! s:DelChanServ()
   my $serv = VIM::Eval('l:server');
   my $chan = VIM::Eval('l:channel');
 
-  if (my ($sref, $chanserv) = find_chanserv($serv, $chan))
+  if (my ($sref, $cref) = find_chanserv($serv, $chan))
     {
-      if ($chanserv->{'bufnum'} >= 0)
+      if ($cref->{'bufnum'} >= 0)
 	{
-	  $chanserv->{'bufnum'} = -1;
+	  $cref->{'bufnum'} = -1;
 	  $sref->{'info'} |= $INFO_UPDATE;
 	}
     }
@@ -2287,12 +2291,17 @@ function! s:ResetChanServ(server, channel)
   my $serv = VIM::Eval('a:server');
   my $chan = VIM::Eval('a:channel');
 
-  if (my ($sref, $chanserv) = find_chanserv($serv, $chan))
+  if (my ($sref, $cref) = find_chanserv($serv, $chan))
     {
-      if ($chanserv->{'info'} & $INFO_HASNEW)
+      if ($cref->{'info'} & $INFO_HASNEW)
 	{
-	  $chanserv->{'info'} &= ~$INFO_HASNEW;
+	  $cref->{'info'} &= ~$INFO_HASNEW;
 	  $sref->{'info'} |= $INFO_UPDATE;
+	}
+      if (is_channel($chan) && ($cref->{'info'} & $INFO_UPDATE))
+	{
+	  draw_nickwin($chan);
+	  $cref->{'info'} &= ~$INFO_UPDATE;
 	}
     }
 }
@@ -3010,7 +3019,7 @@ function! s:PreSendMSG(mesg)
     return s:PromptKey('Do /SERVER first to get connected', 'WarningMsg')
   endif
 
-  let mesg = substitute(a:mesg, '^/\s\+', '', '')
+  let mesg = substitute(a:mesg, '^/\s*', '', '')
   if strlen(mesg)
     let target = strlen(b:query) ? b:query : b:channel
     if strlen(target)
@@ -3617,13 +3626,19 @@ sub update_info
 sub add_timer
 {
   my ($secs, $func, $args) = @_;
-  my $timer = { time => time() + $secs,
-		func => $func,
-		args => $args,
-		done => 0
-	      };
+  my $timer;
 
-  push(@{$Current_Server->{'timers'}}, $timer);
+  if (my $timers = $Current_Server->{'timers'})
+    {
+      $timer =	{ time => time() + $secs,
+		  func => $func,
+		  args => $args,
+		  done => 0
+		};
+      push(@{$timers}, $timer);
+    }
+
+  return $timer;
 }
 
 sub del_timer
@@ -3660,7 +3675,7 @@ sub do_timer
 
 	  foreach my $timer (@{$sref->{'timers'}})
 	    {
-	      if ($timer->{'time'} >= $time)
+	      if ($timer->{'time'} <= $time)
 		{
 		  $timer->{'func'}(@{$timer->{'args'}});
 		  $timer->{'done'} = 1;
@@ -4852,18 +4867,22 @@ sub add_channel
   # We should not change cases here.  It may cause troubles with non-ascii
   # characters
 
-  unless (find_channel($chan))
+  if (my $chans = $Current_Server->{'chans'})
     {
-      $cref = {	name	=> $chan,
-		info	=> 0,
-		bufnum	=> -1,
-		umode	=> 0,
-		cmode	=> 0,
-		key	=> undef,
-		nicks	=> [],
-		splits	=> []   };
-      push(@{$Current_Server->{'chans'}}, $cref);
-      $Current_Server->{'info'} |= $INFO_UPDATE;
+      unless (find_channel($chan))
+	{
+	  $cref = { name    => $chan,
+		    info    => 0,
+		    bufnum  => -1,
+		    umode   => 0,
+		    cmode   => 0,
+		    key	    => undef,
+		    nicks   => [],
+		    splits  => []
+		  };
+	  push(@{$chans}, $cref);
+	  $Current_Server->{'info'} |= $INFO_UPDATE;
+	}
     }
 
   return $cref;
@@ -4895,18 +4914,20 @@ sub find_channel
 sub del_channel
 {
   my $chan  = lc(shift);
-  my $chans = $Current_Server->{'chans'};
 
-  for (my $i = 0; $i <= $#{$chans}; $i++)
+  if (my $chans = $Current_Server->{'chans'})
     {
-      if ($chan eq lc($chans->[$i]->{'name'}))
+      for (my $i = 0; $i <= $#{$chans}; $i++)
 	{
-	  splice(@{$chans}, $i, 1);
-	  $Current_Server->{'info'} |= $INFO_UPDATE;
-	  last;
+	  if ($chan eq lc($chans->[$i]->{'name'}))
+	    {
+	      splice(@{$chans}, $i, 1);
+	      $Current_Server->{'info'} |= $INFO_UPDATE;
+	      last;
+	    }
 	}
+      vim_close_channel($chan);
     }
-  vim_close_channel($chan);
 }
 
 #
@@ -5155,6 +5176,16 @@ sub draw_nickwin
 	}
       vim_selectwin($orgbuf);
     }
+  else
+    {
+      if (my $cref = find_channel($chan))
+	{
+	  unless ($cref->{'info'} & $INFO_UPDATE)
+	    {
+	      $cref->{'info'} |= $INFO_UPDATE;
+	    }
+	}
+    }
 }
 
 sub identify_nick
@@ -5213,12 +5244,17 @@ sub identify_nick
 sub add_chat
 {
   my ($nick, $sref) = @_;
-  my $chat = {	nick	=> $nick,
-		info	=> 0,
-		bufnum	=> -1	};
+  my $chat;
 
-  push(@{$sref->{'chats'}}, $chat);
-  $sref->{'info'} |= $INFO_UPDATE;
+  if (my $chats = $sref->{'chats'})
+    {
+      $chat = { nick  => $nick,
+		info  => 0,
+		bufnum=> -1
+	      };
+      push(@{$chats}, $chat);
+      $sref->{'info'} |= $INFO_UPDATE;
+    }
 
   return $chat;
 }
@@ -5242,13 +5278,16 @@ sub del_chat
 {
   my ($nick, $sref) = @_;
 
-  for (my $i = 0; $i <= $#{$sref->{'chats'}}; $i++)
+  if (my $chats = $sref->{'chats'})
     {
-      if ($nick eq $sref->{'chats'}->[$i]->{'nick'})
+      for (my $i = 0; $i <= $#{$chats}; $i++)
 	{
-	  splice(@{$sref->{'chats'}}, $i, 1);
-	  $sref->{'info'} |= $INFO_UPDATE;
-	  last;
+	  if ($chats->[$i]->{'nick'} eq $nick)
+	    {
+	      splice(@{$chats}, $i, 1);
+	      $sref->{'info'} |= $INFO_UPDATE;
+	      last;
+	    }
 	}
     }
 }
@@ -5256,18 +5295,16 @@ sub del_chat
 sub find_chanserv
 {
   my ($serv, $chan) = @_;
-  my ($sref, $chanserv);
+  my ($sref, $cref);
 
   if ($sref = find_server($serv))
     {
-      $chanserv = $chan
-		  ? &{'find_cha'.(is_channel($chan)
-				  ? 'nnel' : 't')}($chan, $sref)
-		  : $sref;
-
+      $cref = $chan ? &{'find_cha'.(is_channel($chan)
+				    ? 'nnel' : 't')}($chan, $sref)
+		    : $sref;
     }
 
-  return ($sref, $chanserv);
+  return ($sref, $cref);
 }
 
 #
@@ -5284,7 +5321,7 @@ sub add_netsplit
       $ns = { split => $split,
 	      joins => 0,
 	      nicks => {}   };
-      unshift(@{$cref->{'splits'}}, $ns);
+      push(@{$cref->{'splits'}}, $ns);
     }
 
   return $ns;
@@ -5326,11 +5363,14 @@ sub del_netsplit
 
   if (my $cref = find_channel($chan))
     {
-      for (my $i = 0; $i <= $#{$cref->{'splits'}}; $i++)
+      my $splits = $cref->{'splits'};
+
+      for (my $i = 0; $i <= $#{$splits}; $i++)
 	{
-	  if ($cref->{'splits'}->[$i]->{'split'} eq $split)
+	  if ($splits->[$i]->{'split'} eq $split)
 	    {
-	      splice(@{$cref->{'splits'}}, $i, 1);
+	      splice(@{$splits}, $i, 1);
+	      draw_nickwin($chan);
 	      last;
 	    }
 	}
@@ -5344,8 +5384,7 @@ sub add_splitnick
 
   unless ($ns)
     {
-      $ns = add_netsplit($cref);
-      if ($ns)
+      if ($ns = add_netsplit($chan, $split))
 	{
 	  # Forget about the leftovers?
 	  add_timer(600, \&del_netsplit, [ $chan, $split ]);
@@ -5370,11 +5409,12 @@ sub del_splitnick
   if (my $ns = find_netsplit($nick, $chan))
     {
       my $split = $ns->{'split'};
+      my $tojoin= scalar(keys(%{$ns->{'nicks'}}));
 
       unless ($ns->{'joins'}++)
 	{
-	  irc_add_line('', "*: Netjoin detected: %s, %d are to join",
-			    $split, scalar(keys(%{$ns->{'nicks'}})));
+	  irc_add_line('', "*: Netjoin detected: %s, %d %s to join",
+			    $split, $tojoin, ($tojoin > 1 ? 'are' : 'is'));
 	}
 
       delete($ns->{'nicks'}->{$nick});
@@ -5748,7 +5788,7 @@ sub parse_kick
 {
   my ($from, $args) = @_;
 
-  if (my ($chan, $nick, $mesg) = (${$args} =~ /^(\S+) (\S+) :(.*)$/))
+  if (my ($chan, $nick, $mesg) = (${$args} =~ /^(\S+)\s+(\S+)\s+:(.*)$/))
     {
       my $pref = find_nickprefix($nick, $chan);
 
@@ -5772,7 +5812,7 @@ sub parse_mode
 {
   my ($from, $args) = @_;
 
-  if (my ($chan, $mode) = (${$args} =~ /^(\S+) :?(.*?)\s*$/))
+  if (my ($chan, $mode) = (${$args} =~ /^(\S+)\s+:?(.*?)\s*$/))
     {
       if (is_channel($chan))
 	{
@@ -5825,7 +5865,7 @@ sub parse_notice
 {
   my ($from, $args) = @_;
 
-  if (my ($chan, $mesg) = (${$args} =~ /^(\S+) :?(.*)$/))
+  if (my ($chan, $mesg) = (${$args} =~ /^(\S+)\s+:?(.*)$/))
     {
       unless (identify_nick($from, \$mesg)) # if not from nickserv
 	{
@@ -5847,7 +5887,7 @@ sub parse_notice
 sub parse_part
 {
   my ($from, $args) = @_;
-  my ($chan, $mesg) = (${$args} =~ /^(\S+) :(.*)$/);
+  my ($chan, $mesg) = (${$args} =~ /^(\S+)\s+:(.*)$/);
   my $pref = find_nickprefix($from, $chan);
 
   if (del_nick($from, $chan))
@@ -5894,7 +5934,7 @@ sub parse_privmsg
 {
   my ($from, $args) = @_;
 
-  if (my ($chan, $mesg) = (${$args} =~ /^(\S+) :(.*)$/))
+  if (my ($chan, $mesg) = (${$args} =~ /^(\S+)\s+:(.*)$/))
     {
       my $pref;
 
@@ -5930,8 +5970,8 @@ sub parse_privmsg
 sub parse_quit
 {
   my ($from, $args) = @_;
+  my ($mesg)= (${$args} =~ /^:(.+)$/);
   my $regex = qr([[:alnum:]]+(?:\.[-[:alnum:]]+)+);
-  my ($mesg)= (${$args} =~ /^:(.*)$/);
   my $split = ($mesg =~ /^$regex $regex$/);
 
   foreach my $cref (@{$Current_Server->{'chans'}})
@@ -5962,7 +6002,7 @@ sub parse_topic
 {
   my ($from, $args) = @_;
 
-  if (my ($chan, $topic) = (${$args} =~ /^(\S+) :(.*)$/))
+  if (my ($chan, $topic) = (${$args} =~ /^(\S+)\s+:(.*)$/))
     {
       irc_add_line($chan, "*: %s sets new topic: %s", $from, $topic);
 
@@ -5978,7 +6018,7 @@ sub parse_wallops
 {
   my ($from, $args) = @_;
 
-  if (my ($mesg) = (${$args} =~ /^:(.*)$/))
+  if (my ($mesg) = (${$args} =~ /^:(.+)$/))
     {
       irc_add_line('', "!%s!: %s", $from, $mesg);
     }
@@ -5988,7 +6028,7 @@ sub parse_line
 {
   my $line = shift;
 
-  if (my ($from, $comd, $args) = (${$line} =~ /^:(\S+) (\S+) (.*)$/))
+  if (my ($from, $comd, $args) = (${$line} =~ /^:(\S+)\s+(\S+)\s+(.*)$/))
     {
       ($from, $From_Server) = ($from =~ /^([^!]+)(?:!(\S+))?$/);
 
@@ -6018,7 +6058,7 @@ sub parse_line
     }
   else
     {
-      if (($comd, $args) = (${$line} =~ /^(\S+) :?(.*)$/))
+      if (($comd, $args) = (${$line} =~ /^(\S+)\s+:?(.*)$/))
 	{
 	  if (0)
 	    {
