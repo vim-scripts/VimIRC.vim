@@ -1,0 +1,40 @@
+This is a mirror of http://www.vim.org/scripts/script.php?script_id=931
+
+This is an IRC client which runs on Vim.  It has some of the features
+IRC users might expect, such as multiple servers connectivity, DCC
+SEND/CHAT features etc..  Read the plugin file for more feature info and
+usage instructions.
+
+For those who are unfamiliar with IRC in general, I recommend visiting
+this site first: http://www.irchelp.org/
+
+If you have any questions, problems, or suggestions etc., /query or
+e-mail the maintainer.  Do not direct them to the channel #vim please.
+
+Screenshots:
+  http://www.dd.iij4u.or.jp/~madokam/img/vimirc04.png
+  http://www.dd.iij4u.or.jp/~madokam/img/vimirc05.png (invoking web browser)
+
+Here is a minimum set of knowledge required to start/exit the script:
+
+To start it, type
+
+:VimIRC<CR>
+
+Then you'll be prompted for some user info (nick, full name etc.).
+
+Upon successfull connection, try some normal commands you're familiar
+with ("j", "k", "<C-W>-"things and so on).  Typing "i" or "I" will let
+you in to the IRC-command mode, where you can enter commands such as
+"/join #vim" and messages.
+
+To quit, just press "Q".
+
+Another method of quitting: get out of the loop with "<C-C>", then type
+
+:VimIRCQuit<CR>
+
+If you change your mind and want to get online again, press "<Space>" on
+any of the VimIRC windows.
+
+Have fun!
