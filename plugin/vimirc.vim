@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 Feb 2004
-" Last Change: Tue, 25 Jan 2005 16:25:34 +0900 (JST)
+" Last Change: Sun, 30 Jan 2005 17:15:47 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -34,7 +34,8 @@
 "     messages.
 "
 "     So my recommendation is, use a shortcut which creates a VimIRC-dedicated
-"     instance of Vim, where you do not initiate normal editing sessions.
+"     instance of Vim, where you do not initiate normal editing sessions (See
+"     Tip 1, located far below, for how to do this).
 "
 " Requirements:
 "   * Vim 6.2 or later with perl interface enabled
@@ -47,9 +48,14 @@
 "     let g:vimirc_user		="username"
 "     let g:vimirc_realname	="full name"
 "     let g:vimirc_server	="irc.foobar.com:6667"
-"				  Your favorite IRC server
 "				  (default: irc.freenode.net)
+"				  Your favorite IRC server.  Can be a
+"				  comma-separated list.
 "     let g:vimirc_umode	="user modes" set upon logon (e.g.: "+i")
+"     let g:vimirc_pass		="password"
+"				="password1@server1,password2@server2"
+"				  Set this only if server requires
+"				  authentication.
 "
 "   Misc.:
 "
@@ -132,15 +138,16 @@
 "
 "	-n nickname
 "	-u username
-"	-s server:port
+"	-s server[:port]
+"	-p password
 "
 "	Long option(s):
 "
-"	--realname="full name"
+"	--real[name]="full name"
 "
 " Startup:
 "   Type
-"     :VimIRC<CR>
+"     :VimIRC [runtime options]<CR>
 "
 "   You will be prompted for several user information (nick etc.) if you have
 "   not set options listed above.
@@ -204,7 +211,6 @@
 " TODOs:
 "   * handling of control characters (bold, underline etc.)
 "   * multibyte support (done? I don't think so)
-"   * authentication (just add one line to send PASS)
 "   * flood protection
 "   * IPv6
 "   * SSL
@@ -226,19 +232,20 @@
 "   - logging
 "   - netsplit detection
 "   - command abbreviation (aliasing)
+"   - authentication (just add one line to send PASS)
 "
 " Tips:
-"   1.	If you see extreme slowness in vim startup time due to this plugin,
-"	put "let loaded_vimirc=1" in your .vimrc to avoid loading this in
-"	normal editing sessions.  Create a VimIRC-dedicated rc file (.vimircrc
+"   1.	If you see extreme slowness of vim's startup due to this plugin, put
+"	"let loaded_vimirc=1" in your .vimrc to avoid loading this in your
+"	everyday editing life.  Create a VimIRC-dedicated rc file (.vimircrc
 "	or something) and put necessary settings into it.  Then set up an
-"	alias (shortcut) which runs VimIRC, specifying the rc file you
+"	alias (shortcut) which runs VimIRC, specifying the rc file you've just
 "	created.  Like this:
 "	  alias irc='gvim -i NONE -u ~/.vimircrc -c VimIRC'
 "
-"   2.	In single-window mode, you'll see buffer numbers appear next to the
-"	server/channel names in the `info-bar'.  With them, you can easily
-"	navigate servers/channels like this:
+"   2.	In the `info-bar', which shows up only in single-window mode, you'll
+"	see buffer numbers next to the server/channel names.  With them, you
+"	can easily navigate servers/channels like this:
 "	  :sb1
 "
 "   3.	You can send multiple messages/commands at a time.  Prepare lines of
@@ -257,7 +264,7 @@
 "	  /notice %   '%'s in the message won't be expanded.
 "	  /topic %    New Topic
 "	  /invite nick %
-"	
+"
 "	You can even omit '%' in the last two examples.  Note also that '%'
 "	will be expanded to the nick, if you are on a chat window.
 
@@ -273,7 +280,7 @@ endif
 let s:save_cpoptions = &cpoptions
 set cpoptions&
 
-let s:version = '0.8.12'
+let s:version = '0.9'
 let s:client  = 'VimIRC '.s:version
 
 "
@@ -282,7 +289,7 @@ let s:client  = 'VimIRC '.s:version
 
 if 0
 " Truncate too long buffers (upon logging)
-function! s:BufTruncate()
+function! s:TruncateBuf()
   " suggested option: vimirc_maxlines
 endfunction
 endif
@@ -291,74 +298,102 @@ endif
 " Start/Exit
 "
 
-function! s:ObtainUserInfo(args)
-  " Maybe called more than once
-  let retval = !strlen(a:args) && (exists('s:nick') && exists('s:user')
-	\					      && exists('s:realname'))
-  if !retval
-    let s:nick = s:StrMatched(a:args, '-n\s*\(\S\+\)', '\1')
+function! s:GetUserInfo(args)
+  " NOTE: This may be called more than once
+  if !strlen(a:args)
+	\ && (exists('s:nick') && exists('s:user') && exists('s:realname'))
+    " Already set
+    return 1
+  endif
+
+  let s:nick = s:StrMatched(a:args, '-n\s*\(\S\+\)', '\1')
+  if !strlen(s:nick)
+    let s:nick = s:GetVimVar('g:vimirc_nick')
     if !strlen(s:nick)
-      let s:nick = s:GetVimVar('g:vimirc_nick')
+      let s:nick = s:GetEnv('$IRCNICK')
       if !strlen(s:nick)
-	let s:nick = s:GetEnv('$IRCNICK')
-	if !strlen(s:nick)
-	  let s:nick = s:Input('Enter your nickname')
-	endif
+	let s:nick = s:Input('Enter your nickname')
       endif
     endif
+  endif
 
-    let s:user = s:StrMatched(a:args, '-u\s*\(\S\+\)', '\1')
+  let s:user = s:StrMatched(a:args, '-u\s*\(\S\+\)', '\1')
+  if !strlen(s:user)
+    let s:user = s:GetVimVar('g:vimirc_user')
     if !strlen(s:user)
-      let s:user = s:GetVimVar('g:vimirc_user')
+      let s:user = s:GetEnv('$USER')
       if !strlen(s:user)
-	let s:user = s:GetEnv('$USER')
-	if !strlen(s:user)
-	  let s:user = s:Input('Enter your username')
-	endif
+	let s:user = s:Input('Enter your username')
       endif
     endif
+  endif
 
-    let s:realname = s:StrMatched(a:args,
-	  \"--real\\%(name\\)\\==\\(['\"]\\)\\(.\\{-\\}\\)\\1", '\2')
+  let s:pass = s:StrMatched(a:args, '-p\s*\(\S\+\)', '\1')
+  if !strlen(s:pass)
+    let s:pass = s:GetVimVar('g:vimirc_pass')
+  endif
+
+  let s:realname = s:StrMatched(a:args,
+		    \"--real\\%(name\\)\\==\\(['\"]\\)\\(.\\{-\\}\\)\\1", '\2')
+  if !strlen(s:realname)
+    let s:realname = s:GetVimVar('g:vimirc_realname')
     if !strlen(s:realname)
-      let s:realname = s:GetVimVar('g:vimirc_realname')
+      let s:realname = s:GetEnv('$NAME')
       if !strlen(s:realname)
-	let s:realname = s:GetEnv('$NAME')
+	let s:realname = s:GetEnv('$IRCNAME')
 	if !strlen(s:realname)
-	  let s:realname = s:GetEnv('$IRCNAME')
-	  if !strlen(s:realname)
-	    let s:realname = s:Input('Enter your full name')
-	  endif
+	  let s:realname = s:Input('Enter your full name')
 	endif
       endif
     endif
+  endif
 
-    let s:umode = s:StrMatched(a:args, '-m\s*\(\S\+\)', '\1')
+  let s:umode = s:StrMatched(a:args, '-m\s*\(\S\+\)', '\1')
+  if !strlen(s:umode)
+    let s:umode = s:GetVimVar('g:vimirc_umode')
     if !strlen(s:umode)
-      let s:umode = s:GetVimVar('g:vimirc_umode')
-      if !strlen(s:umode)
-	let s:umode = s:GetEnv('$IRCUMODE')
-	if !strlen(s:umode)
-	  let s:umode = 0
-	endif
-      endif
+      let s:umode = s:GetEnv('$IRCUMODE')
     endif
   endif
 
-  let retval = (strlen(s:nick) && strlen(s:user) && strlen(s:realname))
-  if retval
-    let s:server = s:StrMatched(a:args, '-s\s*\(\S\+\)', '\1')
+  if !(strlen(s:nick) && strlen(s:user) && strlen(s:realname))
+    unlet s:nick s:user s:pass s:realname s:umode
+    return 0
+  endif
+
+  let s:server = s:StrMatched(a:args, '-s\s*\(\S\+\)', '\1')
+  if !strlen(s:server)
+    let s:server = s:GetVimVar('g:vimirc_server')
     if !strlen(s:server)
-      let s:server = s:GetVimVar('g:vimirc_server')
-      if !strlen(s:server)
-	let s:server = 'irc.freenode.net:6667'
-      endif
+      let s:server = 'irc.freenode.net:6667'
     endif
-  else
-    unlet s:nick s:user s:realname s:umode
   endif
 
-  return retval
+  return 1
+endfunction
+
+function! s:GetServerOption(option, server)
+  let option = a:option
+  " option1@server1,option2@server2
+  if a:option =~ '@'
+    let option = matchstr(a:option,
+	  \		  '\m[^,]\+\%(@\V'.a:server.'\m\%([,:]\|$\)\)\@=')
+  endif
+  return option
+endfunction
+
+function! s:GetServerUMODE(...)
+  let umode = s:GetServerOption(s:umode, (a:0 ? a:1 : s:server))
+  if !strlen(umode)
+    " NOTE: This cannot be an empty string: required as a second parameter of
+    " USER command.
+    let umode = 0
+  endif
+  return umode
+endfunction
+
+function! s:GetServerPASS(...)
+  return s:GetServerOption(s:pass, (a:0 ? a:1 : s:server))
 endfunction
 
 function! s:InitVars()
@@ -442,11 +477,8 @@ function! s:RegularizeVarIntern(var)
   elseif a:var =~# '\%(dir\|file\)$'
     let {var} = s:RegularizePath({var})
   elseif a:var ==# 'winmode'
-    let s:singlewin = ({var} ==? 'single')
-    if s:opened
-      call s:ToggleBuf_Info()
-    endif
-  elseif a:var =~# '^\%(autoaway\|autoawaytime\|cmdheight\|dccport\|infowidth\|listexpire\|nickswidth\|log\)$'
+    call s:ToggleWinmode({var})
+  elseif a:var =~# '^\%(autoaway\|autoawaytime\|cmdheight\|dccport\|infowidth\|listexpire\|log\|nickswidth\)$'
     " Make sure the value is a valid numeral
     let {var} = {var} + 0
     if a:var ==# 'dccport'
@@ -458,9 +490,7 @@ function! s:RegularizeVarIntern(var)
       if {var} <= 0 " not acceptable
 	let {var} = 1
       endif
-      if s:opened
-	call s:ResizeWin()
-      endif
+      call s:ResizeWin(1)
     endif
   endif
 endfunction
@@ -510,6 +540,46 @@ function! s:ResetGlobVars()
   let &winwidth = s:winwidth
 endfunction
 
+function! s:SetCmds()
+  if exists(':VimIRC')
+    delcommand VimIRC
+  endif
+  command! VimIRCQuit :call s:QuitVimIRC()
+endfunction
+
+function! s:ResetCmds()
+  if exists(':VimIRCQuit')
+    delcommand VimIRCQuit
+  endif
+  command! -nargs=* VimIRC :call s:StartVimIRC(<q-args>)
+endfunction
+if !exists(':VimIRC')
+  call s:ResetCmds()
+endif
+
+function! s:SetAutocmds()
+  augroup VimIRC
+    autocmd!
+    " NOTE: Cannot use CursorHold to auto re-enter the loop: getchar() won't
+    " get a char since key inputs will never be waited after that event.
+    execute 'autocmd CursorHold' s:bufname.'* call s:OfflineMsg()'
+    execute 'autocmd BufDelete' s:bufname_channel.'* call s:DelChanServ()'
+    execute 'autocmd BufDelete' s:bufname_chat.'* call s:DelChanServ()'
+    execute 'autocmd BufDelete' s:bufname_server.'* call s:DelChanServ()'
+    execute 'autocmd BufHidden' s:bufname_channel.'* call s:PreCloseBuf_Channel()'
+    execute 'autocmd BufHidden' s:bufname_chat.'* call s:PreCloseBuf_Chat()'
+    execute 'autocmd BufHidden' s:bufname_list.'* call s:PreCloseBuf_List()'
+    execute 'autocmd BufHidden' s:bufname_server.'* call s:PreCloseBuf_Server()'
+    execute 'autocmd BufWinEnter' s:bufname_channel.'* call s:PostOpenBuf_Channel()'
+    execute 'autocmd BufWinEnter' s:bufname_chat.'* call s:PostOpenBuf_Chat()'
+    execute 'autocmd BufWinEnter' s:bufname_server.'* call s:PostOpenBuf_Server()'
+  augroup END
+endfunction
+
+function! s:ResetAutocmds()
+  autocmd! VimIRC
+endfunction
+
 function! s:StartVimIRC(...)
   if !has('perl')
     echoerr 'To use this, you have to build vim with perl interface. Exiting.'
@@ -522,7 +592,8 @@ function! s:StartVimIRC(...)
   " Initialize most of the internal variables.  User configurations will be
   " dealt with here, too.
   call s:InitVars()
-  if !s:ObtainUserInfo(a:0 ? a:1 : '')
+  " Parse command-line arguments
+  if !s:GetUserInfo(a:0 ? a:1 : '')
     return
   endif
 
@@ -566,48 +637,9 @@ function! s:QuitVimIRC()
       throw 'IMGONNAQUIT'
     endif
   finally
+    call s:PromptKey(' Thanks for flying VimIRC', 'Title')
     call s:ResetSysVars()
   endtry
-endfunction
-
-function! s:SetCmds()
-  if exists(':VimIRC')
-    delcommand VimIRC
-  endif
-  command! VimIRCQuit :call s:QuitVimIRC()
-endfunction
-
-function! s:ResetCmds()
-  if exists(':VimIRCQuit')
-    delcommand VimIRCQuit
-  endif
-  command! -nargs=* VimIRC :call s:StartVimIRC(<q-args>)
-endfunction
-if !exists(':VimIRC')
-  call s:ResetCmds()
-endif
-
-function! s:SetAutocmds()
-  augroup VimIRC
-    autocmd!
-    " NOTE: Cannot use CursorHold to auto re-enter the loop: getchar() won't
-    " get a char since key inputs will never be waited after that event.
-    execute 'autocmd CursorHold' s:bufname.'* call s:OfflineMsg()'
-    execute 'autocmd BufDelete' s:bufname_channel.'* call s:DelChanServ()'
-    execute 'autocmd BufDelete' s:bufname_chat.'* call s:DelChanServ()'
-    execute 'autocmd BufDelete' s:bufname_server.'* call s:DelChanServ()'
-    execute 'autocmd BufHidden' s:bufname_channel.'* call s:PreCloseBuf_Channel()'
-    execute 'autocmd BufHidden' s:bufname_chat.'* call s:PreCloseBuf_Chat()'
-    execute 'autocmd BufHidden' s:bufname_list.'* call s:PreCloseBuf_List()'
-    execute 'autocmd BufHidden' s:bufname_server.'* call s:PreCloseBuf_Server()'
-    execute 'autocmd BufWinEnter' s:bufname_channel.'* call s:PostOpenBuf_Channel()'
-    execute 'autocmd BufWinEnter' s:bufname_chat.'* call s:PostOpenBuf_Chat()'
-    execute 'autocmd BufWinEnter' s:bufname_server.'* call s:PostOpenBuf_Server()'
-  augroup END
-endfunction
-
-function! s:ResetAutocmds()
-  autocmd! VimIRC
 endfunction
 
 function! s:MainLoop()
@@ -832,6 +864,16 @@ function! s:IsBufServerDead()
   return (s:IsBufServer() && s:GetVimVar('b:dead'))
 endfunction
 
+" Whether the buffer is a currently active server/channel/chat
+function! s:IsBufChannelCurrent()
+  return (s:GetVimVar('b:server').s:GetVimVar('b:channel') ==#
+	\		      s:GetVimVar('s:server').s:GetVimVar('s:channel'))
+endfunction
+
+function! s:IsBufChannelOther()
+  return !s:IsBufChannelCurrent()
+endfunction
+
 function! s:IsChannel(channel)
   return !match(a:channel, '[&#+!]')
 endfunction
@@ -897,15 +939,19 @@ endfunction
 
 function! s:OpenBuf(comd, ...)
   try
+    let equalalways = &equalalways
     " Avoid "not enough room" error
     let winminheight= &winminheight
     let winminwidth = &winminwidth
+
+    let &equalalways = 0
     set winminheight=0 winminwidth=0
 
     silent! execute a:comd.(a:0 && strlen(a:1) ? ' '.a:1 : '')
     setlocal noswapfile modifiable
   catch
   finally
+    let &equalalways  = equalalways
     let &winminheight = winminheight
     let &winminwidth  = winminwidth
     return !strlen(v:exception)
@@ -927,7 +973,7 @@ function! s:OpenBuf_Info()
   return 1
 endfunction
 
-function! s:OpenBuf_Server()
+function! s:OpenBuf_Server(...)
   let bufnum = s:GetBufNum_Server()
   let loaded = (bufnum >= 0)
   let singlewin = (s:singlewin || !s:opened)
@@ -941,7 +987,7 @@ function! s:OpenBuf_Server()
     else
       let bufname = s:GenBufName_Server(s:server)
       call s:OpenBuf(comd, bufname)
-      call s:InitBuf_Server(bufname)
+      call s:InitBuf_Server(bufname, (a:0 ? a:1 : 0))
     endif
   endif
 
@@ -1073,7 +1119,7 @@ function! s:OpenBuf_Command()
     let comd = 'belowright 1split'
     if !(chattin || bufnum == bufnr('%'))
       call s:VisitBufNum(strlen(channel) ? s:GetBufNum_Channel(channel)
-	    \				  : s:GetBufNum_Server())
+	    \				 : s:GetBufNum_Server())
     endif
   endif
 
@@ -1178,15 +1224,8 @@ function! s:EnterChanServ(split)
   endif
 endfunction
 
-function! s:ToggleBuf_Info()
-  let bufnum = bufnr('%')
-  if s:singlewin
-    call s:CloseWin_List()
-    call s:OpenBuf_Info()
-  else
-    call s:CloseBuf_Info()
-  endif
-  call s:VisitBufNum(bufnum)
+function! s:PeekBuf(peek)
+  call s:{a:peek ? 'Pre' : 'Post'}PeekBuf()
 endfunction
 
 function! s:PrePeekBuf()
@@ -1220,7 +1259,9 @@ function! s:DoSettings()
   nnoremap <buffer> <silent> I	      :call <SID>OpenBuf_Command()<CR>
   nnoremap <buffer> <silent> o	      :call <SID>OpenBuf_Command()<CR>
   nnoremap <buffer> <silent> O	      :call <SID>OpenBuf_Command()<CR>
-  nnoremap <buffer> <silent> <C-L>    :call <SID>ResizeWin()<CR>
+  nnoremap <buffer> <silent> p	      :call <SID>Beep(1)<CR>
+  nnoremap <buffer> <silent> P	      :call <SID>Beep(1)<CR>
+  nnoremap <buffer> <silent> <C-L>    :call <SID>ResizeWin(1)<CR>
   nnoremap <buffer> <silent> <C-N>    :call <SID>WalkThruChanServ(1)<CR>
   nnoremap <buffer> <silent> <C-P>    :call <SID>WalkThruChanServ(0)<CR>
   match none
@@ -1324,9 +1365,9 @@ function! s:InitBuf_Info(bufname)
   call s:SetBufNum(a:bufname, bufnr('%'))
 endfunction
 
-function! s:InitBuf_Server(bufname)
+function! s:InitBuf_Server(bufname, port)
   let b:server	= s:server
-  let b:port	= 0
+  let b:port	= a:port
   let b:umode	= ''
   let b:title	= '  '.s:nick.' @ '.s:server
   call setline(1, s:GetTime(1).' *: Connecting with '.s:server.'...')
@@ -1394,6 +1435,7 @@ function! s:InitBuf_Command(bufname, channel, chattin)
   let b:title	= '  '.(a:chattin ? 'Chatting with' : 'Posting to').' '.
 	\(strlen(a:channel) ? a:channel.' @ ' : '').s:server
   call s:DoSettings()
+  setlocal expandtab
   nnoremap <buffer> <silent> <CR> :call <SID>SendLines()<CR>
   inoremap <buffer> <silent> <CR> <Esc>:call <SID>SendLines()<CR>
   vnoremap <buffer> <silent> <CR> :call <SID>SendLines()<CR>
@@ -1408,11 +1450,11 @@ function! s:InitBuf_Command(bufname, channel, chattin)
 endfunction
 
 function! s:FillBuf_Nicks(nick, ...)
-  call s:PreBufModify()
+  call s:ModifyBuf(1)
   call s:BufClear()
   call setline(1, a:nick)
   call append(1, s:GetCurNick())
-  call s:PostBufModify()
+  call s:ModifyBuf(0)
 endfunction
 
 "
@@ -1573,7 +1615,7 @@ function! s:NeatenBuf_Command()
   " We move the input line to the bottom
   let line = getline('.')
 
-  call s:PreBufModify()
+  call s:ModifyBuf(1)
   delete _
   call s:BufTrim()
   if strlen(line)
@@ -1588,23 +1630,40 @@ function! s:NeatenBuf_Command()
   endif
 
   call s:ExecuteSafe('keepjumps', 'normal! G0')
-  call s:PostBufModify()
+  call s:ModifyBuf(0)
 endfunction
 
 "
 " Closing windows
 "
 
-function! s:CloseWin(cond)
-  let bufnum = bufnr('%')
+function! s:CloseWinNum(winnum)
   let v:errmsg = ''
+  if s:VisitWinNum(a:winnum)
+    let autocmd_disable = s:autocmd_disable
+    let equalalways = &equalalways
+
+    let s:autocmd_disable = 1
+    let &equalalways = 0
+
+    silent! close!
+
+    let s:autocmd_disable = autocmd_disable
+    let &equalalways = equalalways
+  endif
+  return !strlen(v:errmsg)
+endfunction
+
+function! s:CloseWin(cond)
+  let v:errmsg = ''
+  let bufnum = bufnr('%')
 
   silent wincmd b
   while 1
-    " Accept arguments?
+    " TODO: Accept arguments and/or multiple conditions?
     if {a:cond}()
-      silent! close!
-      if strlen(v:errmsg)
+      " XXX: Vim crashes here sometimes
+      if !s:CloseWinNum(winnr())
 	break
       endif
       continue
@@ -1622,7 +1681,6 @@ function! s:CloseWin_IRC()
   if !s:CloseWin('s:IsBufIRC')
     silent enew!
   endif
-  call s:PromptKey(' Thanks for flying VimIRC', 'Title')
 endfunction
 
 function! s:CloseWin_DeadServer()
@@ -1633,11 +1691,22 @@ function! s:CloseWin_List()
   call s:CloseWin('s:IsBufList')
 endfunction
 
+" Implements VimIRC version of ":only": close all buffers except the current
+" one (where user did "/set winmode")
+" XXX: This sometimes crashes Vim
+function! s:CloseWin_Other()
+  call s:CloseWin('s:IsBufChannelOther')
+  call s:CloseWin_List()
+endfunction
+
 "
 " Resizing windows
 "
 
-function! s:ResizeWin()
+function! s:ResizeWin(restore)
+  if !s:opened
+    return
+  endif
   let bufnum = bufnr('%')
 
   silent wincmd b
@@ -1655,8 +1724,39 @@ function! s:ResizeWin()
     silent wincmd W
   endwhile
 
+  if a:restore
+    call s:VisitBufNum(bufnum)
+    redraw!
+  endif
+endfunction
+
+"
+" Window-mode related functions
+"
+
+function! s:ToggleWinmode(mode)
+  let singlewin = s:GetVimVar('s:singlewin') + 0
+  let s:singlewin = (a:mode ==? 'single')
+
+  if s:opened && singlewin != s:singlewin
+    call s:ToggleBuf_Info(s:singlewin)
+  endif
+endfunction
+
+function! s:ToggleBuf_Info(open)
+  let bufnum = bufnr('%')
+  if a:open	" single-window mode
+    call s:CloseWin_Other()
+    let bufnum = bufnr('%')
+    call s:OpenBuf_Info()
+  else		" multi-window mode
+    " TODO: Open hidden buffers
+    call s:CloseBuf_Info()
+  endif
+
+  call s:ResizeWin(0)
   call s:VisitBufNum(bufnum)
-  call s:Refresh()
+  redraw!
 endfunction
 
 "
@@ -1726,7 +1826,7 @@ function! s:HandleKey(key)
   elseif char == "\<C-N>" || char == "\<C-P>"
     call s:WalkThruChanServ(char == "\<C-N>")
   elseif char == "\<C-L>"
-    call s:ResizeWin()
+    call s:ResizeWin(1)
   elseif char == "\<C-B>" || char == "\<C-F>"
 	\ || char == "\<C-D>" || char == "\<C-U>"
 	\ || char == "\<C-E>" || char == "\<C-Y>"
@@ -1824,15 +1924,14 @@ function! s:SendLines() range
     return
   finally
     unlet s:channel
+    call s:SetLastActive()
   endtry
 
-  call s:SetLastActive()
   call s:MainLoop()
 endfunction
 
 function! s:SendLine(line)
   let comd = ''
-  let args = ''
 
   let rx = '^/\(\S\+\)\%(\s\+\(.\+\)\)\=$'
   if a:line =~ rx
@@ -1874,9 +1973,9 @@ function! s:PostSendLine(comd)
     call s:VisitBuf_Server()
   endif
 
-  " Scroll to the bottom if you are in talkative mood
+  " Scroll to the bottom if user is in talkative mood
   if a:comd =~# '^\%(ACTION\)\=$' && (s:IsBufChannel() || s:IsBufChat())
-    call s:ExecuteSafe('keepjumps', 'normal! Gzb')
+    call s:ExecuteSafe('keepjumps', 'normal! G0zb')
     redraw
   endif
 endfunction
@@ -2085,9 +2184,9 @@ function! s:UpdateList()
   if s:IsBufList()
     " Prevent excessive updating
     if (localtime() - b:updated) > 60
-      call s:PreBufModify()
+      call s:ModifyBuf(1)
       call s:BufClear()
-      call s:PostBufModify()
+      call s:ModifyBuf(0)
 
       call s:SetCurServer(b:server)
       call s:DoSend('LIST', '')
@@ -2205,11 +2304,14 @@ endfunction
 function! s:ExpandArgs(comd, args)
   let args = a:args
 
-  if a:comd =~# '^\%(ISON\|USERHOST\)$'
+  if a:comd =~# '^\%(NAMES\|WHO\%(I\|WA\)S\)$'
+    " Syntax: CHANNEL [<comma> CHANNEL]*
+    let args = s:StrSquash(substitute(a:args, '%', s:channel, ''))
+  elseif a:comd =~# '^\%(ISON\|USERHOST\)$'
+    " Syntax: USER [<space> USER]*
     " User might delimit targets with commas, which is wrong
     let args = s:StrCompress(substitute(a:args, ',', ' ', 'g'))
   elseif a:comd =~# '^\%(INVITE\)$'
-    " Note the syntactic difference with other binary commands
     " Syntax: USER CHANNEL
     let rx = '^\(\S\+\)\%(\s\+\(\S\+\)\)\=$'
     let nick	= s:StrMatched(a:args, rx, '\1')
@@ -2269,8 +2371,6 @@ function! s:GetCmdRx(comd)
     let rx = '^\(\S\+ \)\s*:\=\(.\+\)$'
   elseif s:IsCmdTernary(a:comd)
     let rx = '^\(\S\+\s\+\S\+ \)\s*:\=\(.\+\)$'
-  else
-    " What the #$*! do we have!?
   endif
   return rx
 endfunction
@@ -2288,7 +2388,7 @@ function! s:Cmd_HELP(...)
   echo " VimIRC Help\n\n"
   echo " Available commands:\n\n"
   echohl None
-  echo "/server [host:port]"
+  echo "/server [host:port] [password]"
   echo "\tTry to connect with a new server.  Or reconnect the current server"
   echo "\twhen no argument is given."
   echo "/quit [reason]"
@@ -2495,7 +2595,7 @@ function! s:SetUserMode(umode)
   if bufnum >= 0
     call setbufvar(bufnum, 'umode', a:umode)
     call setbufvar(bufnum, 'title', '  '.s:GetCurNick().
-	  \' [+'.a:umode.'] @ '.s:server)
+	  \' ['.a:umode.'] @ '.s:server)
   endif
 endfunction
 
@@ -2566,17 +2666,16 @@ function! s:Resize(size, vertical)
 endfunction
 
 function! s:VisitWinNum(winnum)
-  silent execute a:winnum.'wincmd w'
+  if a:winnum >= 0 && a:winnum != winnr()
+    silent execute a:winnum.'wincmd w'
+  endif
+  return (a:winnum == winnr())
 endfunction
 
+" NOTE: Returns -1 upon failure, not 0
 function! s:VisitBufNum(bufnum)
-  let winnum = -1
-  if a:bufnum
-    let winnum = bufwinnr(a:bufnum)
-    if winnum >= 0 && winnum != winnr()
-      call s:VisitWinNum(winnum)
-    endif
-  endif
+  let winnum = bufwinnr(a:bufnum)
+  call s:VisitWinNum(winnum)
   return winnum
 endfunction
 
@@ -2592,6 +2691,7 @@ function! s:CloseBufNum(bufnum)
     endwhile
     let &equalalways = 1
   endif
+  return !strlen(v:errmsg)
 endfunction
 
 function! s:Beep(times)
@@ -2687,13 +2787,17 @@ function! s:UpdateStatusLine(...)
   endif
 endfunction
 
-function! s:PreBufModify(...)
+function! s:ModifyBuf(modify, ...)
+  call s:{a:modify ? 'Pre' : 'Post'}ModifyBuf(a:0 ? a:1 : bufnr('%'))
+endfunction
+
+function! s:PreModifyBuf(...)
   let s:save_undolevels = &undolevels
   set undolevels=-1
   call setbufvar((a:0 && a:1 ? a:1 : bufnr('%')), '&modifiable', 1)
 endfunction
 
-function! s:PostBufModify(...)
+function! s:PostModifyBuf(...)
   if exists('s:save_undolevels')
     let &undolevels = s:save_undolevels
     unlet s:save_undolevels
@@ -2748,8 +2852,14 @@ function! s:StrTrim(str)
   return substitute(a:str, '\%(^\s\+\|\s\+$\)', '', 'g')
 endfunction
 
+" Ditto
 function! s:StrCompress(str)
   return substitute(s:StrTrim(a:str), '\s\{2,\}', ' ', 'g')
+endfunction
+
+" Severer version of the above
+function! s:StrSquash(str)
+  return substitute(a:str, '\s\+', '', 'g')
 endfunction
 
 function! s:StrMultiply(str, times)
@@ -2841,9 +2951,9 @@ function! s:SortSelect()
   endif
 
   let orglin = getline('.')
-  call s:PreBufModify()
+  call s:ModifyBuf(1)
   call s:SortList(cmp, (s:GetVimVar('b:sortdir') + 0))
-  call s:PostBufModify()
+  call s:ModifyBuf(0)
   call s:SearchLine(orglin)
 endfunction
 
@@ -2853,9 +2963,9 @@ function! s:SortReverse()
   endif
 
   let orglin = line('.')
-  call s:PreBufModify()
+  call s:ModifyBuf(1)
   perl $curbuf->Set(1, reverse($curbuf->Get(1 .. $curbuf->Count())))
-  call s:PostBufModify()
+  call s:ModifyBuf(0)
   let b:sortdir = !(s:GetVimVar('b:sortdir'))
   execute (line('$') - orglin + 1)
 endfunction
@@ -3086,7 +3196,7 @@ function! s:GetCurNick()
 {
   my $nick;
 
-  if (exists($Current_Server->{'nick'}))
+  if (exists($Current_Server->{'nick'}) && $Current_Server->{'nick'})
     {
       $nick = $Current_Server->{'nick'};
     }
@@ -3103,19 +3213,22 @@ endfunction
 function! s:Cmd_SERVER(server)
   let port = 0
   let server = strlen(a:server) ? a:server : s:GetVimVar('b:server')
+  let pass = ''
+
   if !strlen(server)
     let server = s:Input('Enter server name')
     if !strlen(server)
       return
     endif
   endif
-  call s:CloseBuf_Command()
 
   " TODO: Validity check of server?
-  let rx = '^\(..\{-\}\)\%(:\(\d\+\)\)\=$'
+  let rx = '^\(..\{-\}\)\%(:\(\d\+\)\)\=\%(\s\+\(\S\+\)\)\=$'
   if server =~ rx
     let s:server = s:StrMatched(server, rx, '\1')
     let port = s:StrMatched(server, rx, '\2') + 0
+    let pass = s:StrMatched(server, rx, '\3')
+
     if !port
       let port = s:GetVimVar('b:port') + 0
       if port <= 0
@@ -3124,45 +3237,19 @@ function! s:Cmd_SERVER(server)
     endif
   endif
 
-  call s:OpenBuf_Server()
-  let b:port = port
-
+  call s:OpenBuf_Server(port)
   call s:CloseWin_DeadServer()
   $
   call s:HiliteLine('.')
+  redraw
 
   perl <<EOP
 {
-  my $port  = VIM::Eval('b:port');
-  my $server= VIM::Eval('b:server');
+  my $server= VIM::Eval('s:server');
+  my $port  = VIM::Eval('l:port');
+  my $pass  = VIM::Eval('l:pass');
 
-  my $nick  = VIM::Eval('s:GetCurNick()');
-
-  if ($port <= 0)
-    {
-      $port = 6667;
-    }
-
-  $Current_Server = find_server($server);
-  if ($Current_Server)
-    {
-      if (($Current_Server->{'conn'} & $CS_LOGIN)
-	  && $Current_Server->{'port'} == $port)
-	{
-	  return;
-	}
-
-      close_server($Current_Server);
-    }
-  else
-    {
-      $Current_Server = add_server();
-      $Current_Server->{'server'} = $server;
-      $Current_Server->{'nick'}	  = $nick;
-    }
-  $Current_Server->{'port'} = $port;
-
-  open_server($Current_Server);
+  comd_server($server, $port, $pass);
 }
 EOP
 endfunction
@@ -3452,6 +3539,7 @@ function! s:Send_NICK(comd, args)
 endfunction
 
 function! s:Send_PART(comd, args)
+  " XXX: According to RFC1459, PART command only accepts channels.
   let args = strlen(a:args) ? a:args : (s:IsChannel('s:channel')
 	\				? s:channel.' '.s:partmsg : '')
   if !strlen(args)
@@ -3705,19 +3793,20 @@ sub set_connected
 
 sub close_server
 {
-  my $sref = shift;
-
-  $sref->{'conn'}  &= ~$CS_LOGIN;
-  $sref->{'motd'}   = 0;
-  $sref->{'umode'}  = undef;
-  $sref->{'lastbuf'}= undef;
-
-  if ($sref->{'conn'} & $CS_QUIT)
+  if (my $sref = shift)
     {
-      $sref->{'timers'} = [];
-    }
+      $sref->{'conn'}  &= ~$CS_LOGIN;
+      $sref->{'motd'}   = 0;
+      $sref->{'umode'}  = undef;
+      $sref->{'lastbuf'}= undef;
 
-  conn_close($sref);
+      if ($sref->{'conn'} & $CS_QUIT)
+	{
+	  $sref->{'timers'} = [];
+	}
+
+      conn_close($sref);
+    }
 }
 
 sub open_server
@@ -3736,6 +3825,50 @@ sub open_server
   return 0;
 }
 
+sub comd_server
+{
+  my ($server, $port, $pass) = @_;
+
+  if ($port <= 0)
+    {
+      $port = 6667;
+    }
+
+  unless ($pass)
+    {
+      $pass = VIM::Eval('s:GetServerPASS()');
+    }
+
+  if ($Current_Server = find_server($server))
+    {
+      if (($Current_Server->{'conn'} & $CS_LOGIN)
+	  && $Current_Server->{'port'} == $port)
+	{
+	  return;
+	}
+      close_server($Current_Server);
+    }
+  else
+    {
+      if ($Current_Server = add_server())
+	{
+	  $Current_Server->{'server'} = $server;
+	  $Current_Server->{'nick'}   = VIM::Eval('s:GetCurNick()');
+	}
+    }
+
+  if ($Current_Server)
+    {
+      $Current_Server->{'port'} = $port;
+      $Current_Server->{'umode'}= vim_get_serverumode();
+      if ($pass)
+	{
+	  $Current_Server->{'pass'} = $pass;
+	}
+      open_server($Current_Server);
+    }
+}
+
 sub login_server
 {
   my $sref = shift;
@@ -3750,9 +3883,10 @@ sub login_server
       irc_send("PASS %s", $sref->{'pass'});
     }
   irc_send("NICK %s", $sref->{'nick'});
-  irc_send("USER %s %s * :%s",
+  irc_send("USER %s %s %s :%s",
 	    vim_getvar('s:user'),
-	    vim_getvar('s:umode'),
+	    vim_get_serverumode(),
+	    vim_getvar('s:user'),
 	    vim_getvar('s:realname'));
 }
 
@@ -3765,9 +3899,9 @@ sub post_login_server
 
   irc_send("USERHOST %s", $sref->{'nick'});
 
-  if (my $umode = vim_getvar('s:umode'))
+  if ($sref->{'umode'})
     {
-      irc_send("MODE %s %s", $sref->{'nick'}, $umode);
+      irc_send("MODE %s %s", $sref->{'nick'}, $sref->{'umode'});
     }
 
   if ($sref->{'away'})
@@ -3883,10 +4017,10 @@ sub irc_add_line
   my ($cref, $args) = @_;
   my $format = shift(@{$args});
 
-  vim_bufmodify(1);
+  vim_modifybuf(1);
   $curbuf->Append($curbuf->Count(), sprintf("%s $format", vim_gettime(1),
 								  @{$args}));
-  vim_bufmodify(0);
+  vim_modifybuf(0);
 
   if ($cref->{'cref'}->{'bufnum'} < 0)
     {
@@ -4064,7 +4198,7 @@ sub update_info
     {
       my $orglin = VIM::Eval("line('.')");
 
-      vim_bufmodify(1);
+      vim_modifybuf(1);
       $curbuf->Delete(1, $curbuf->Count());
 
       foreach my $sref (@Servers)
@@ -4114,7 +4248,7 @@ sub update_info
 	{
 	  $curwin->Cursor($orglin, 0);
 	}
-      vim_bufmodify(0);
+      vim_modifybuf(0);
       vim_visitbuf($orgbuf);
     }
 }
@@ -4676,7 +4810,7 @@ sub dcc_chat_line
 	    }
 	}
     }
-  vim_bufmodify(1);
+  vim_modifybuf(1);
 
   foreach my $line (split(/\x0D?\x0A/, $dcc->{'linebuf'}))
     {
@@ -4696,7 +4830,7 @@ sub dcc_chat_line
 			      ($action ? '*' : '='),
 			      $line));
     }
-  vim_bufmodify(0);
+  vim_modifybuf(0);
 
   if ($peek)
     {
@@ -5415,7 +5549,7 @@ sub process_umode
 	}
     }
 
-  irc_chan_line('', "*: Your user modes: +%s", $Current_Server->{'umode'});
+  irc_chan_line('', "*: Your user modes: %s", $Current_Server->{'umode'});
   VIM::DoCommand("call s:SetUserMode(\"$Current_Server->{'umode'}\")");
 }
 
@@ -5791,7 +5925,7 @@ sub draw_nickline
 
       unless ($add && $todel == 1)
 	{
-	  vim_bufmodify(1);
+	  vim_modifybuf(1);
 	  if ($todel)
 	    {
 	      $curbuf->Delete($todel);
@@ -5800,7 +5934,7 @@ sub draw_nickline
 	    {
 	      $curbuf->Append(0, sprintf("%s%s", $pref, $nick));
 	    }
-	  vim_bufmodify(0);
+	  vim_modifybuf(0);
 	}
       if ($orglin)  # Restore the cursor position
 	{
@@ -5834,7 +5968,7 @@ sub draw_nickwin
       my $orglin= ($orgwin == VIM::Eval('winnr()')) ? VIM::Eval("line('.')")
 						    : 0;
 
-      vim_bufmodify(1);
+      vim_modifybuf(1);
       $curbuf->Delete(1, $curbuf->Count());
 
       foreach my $nref (@{$nicks})
@@ -5844,7 +5978,7 @@ sub draw_nickwin
 					      $nref->{'nick'}));
 	}
       $curbuf->Delete(1);
-      vim_bufmodify(0);
+      vim_modifybuf(0);
 
       if ($orglin)
 	{
@@ -6851,6 +6985,11 @@ sub vim_gettime
   return scalar(VIM::Eval("s:GetTime($_[0], $_[1])"));
 }
 
+sub vim_get_serverumode
+{
+  return scalar(VIM::Eval('s:GetServerUMODE()'));
+}
+
 sub vim_open_server
 {
   VIM::DoCommand('call s:OpenBuf_Server()');
@@ -6911,16 +7050,14 @@ sub vim_visitbuf
   return scalar(VIM::Eval("s:VisitBufNum($_[0])"));
 }
 
-sub vim_bufmodify
+sub vim_modifybuf
 {
-  if ($_[0])
-    {
-      VIM::DoCommand('call s:PreBufModify()');
-    }
-  else
-    {
-      VIM::DoCommand('call s:PostBufModify()');
-    }
+  VIM::DoCommand("call s:ModifyBuf($_[0])");
+}
+
+sub vim_peekbuf
+{
+  VIM::DoCommand("call s:PeekBuf($_[0])");
 }
 
 sub vim_notifyentry
@@ -6931,18 +7068,6 @@ sub vim_notifyentry
 sub vim_redraw
 {
   VIM::DoCommand('redraw');
-}
-
-sub vim_peekbuf
-{
-  if ($_[0])
-    {
-      VIM::DoCommand('call s:PrePeekBuf()');
-    }
-  else
-    {
-      VIM::DoCommand('call s:PostPeekBuf()');
-    }
 }
 
 EOP
