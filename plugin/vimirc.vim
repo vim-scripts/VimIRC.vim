@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 Feb 2004
-" Last Change: Tue, 18 Jan 2005 00:28:56 +0900 (JST)
+" Last Change: Wed, 19 Jan 2005 23:28:14 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -220,6 +220,11 @@
 "	server/channel names in the `info-bar'.  With them, you can easily
 "	navigate servers/channels like this:
 "	  :sb1
+"
+"   3.	You can send multiple messages/commands at a time.  Prepare lines of
+"	messages elsewhere and copy/paste them into the command buffer.  Then
+"	visually select the lines and press <CR>.  (Do with caution so as not
+"	to be kicked off!)
 
 if exists('g:loaded_vimirc') || &compatible
   finish
@@ -233,23 +238,12 @@ endif
 let s:save_cpoptions = &cpoptions
 set cpoptions&
 
-let s:version = '0.8.9'
+let s:version = '0.8.10'
 let s:client  = 'VimIRC '.s:version
 
 "
 " Developing functions
 "
-
-" TODO: Keep track of the state of the nick you are chatting with (ison, nick
-"	change)
-
-function! s:FillBuf_Nicks(nick, ...)
-  call s:PreBufModify()
-  call s:BufClear()
-  call setline(1, a:nick)
-  call append(1, s:GetCurNick())
-  call s:PostBufModify()
-endfunction
 
 "
 " Start/Exit
@@ -490,6 +484,7 @@ function! s:StartVimIRC(...)
   call s:StartServer(s:server)
 
   let s:opened = 1
+
   call s:MainLoop()
 endfunction
 
@@ -550,10 +545,10 @@ endfunction
 
 function! s:MainLoop()
   " NOTE: Be careful of the recursion, it may cause some obscure troubles
-  let s:inside_loop = (!s:inside_loop && s:opened && s:IsSockOpen())
-  if !s:inside_loop
+  if !(!s:inside_loop && s:opened && s:IsSockOpen())
     return
   endif
+  let s:inside_loop = 1
 
   " Clearing the vim command line
   echo ""
@@ -738,6 +733,7 @@ endfunction
 
 function! s:IsBufList(...)
   return !match(bufname(a:0 && a:1 ? a:1 : '%'), s:bufname_list)
+	\						&& exists('b:server')
 endfunction
 
 function! s:IsBufChannel(...)
@@ -764,6 +760,8 @@ function! s:IsNick(channel)
   return (strlen(a:channel) && !s:IsChannel(a:channel))
 endfunction
 
+" Whether this is the appropriate place over which to open another
+" channel/server
 function! s:CanOpenChannel(...)
   let bufnum = a:0 && a:1 ? a:1 : bufnr('%')
   return (s:IsBufChannel(bufnum) || s:IsBufChat(bufnum)
@@ -865,9 +863,7 @@ function! s:OpenBuf_Server()
       else
 	call s:OpenBuf(comd, '+'.bufnum.'buffer')
       endif
-      if exists('b:dead')
-	unlet b:dead
-      endif
+      unlet! b:dead
     else
       let bufname = s:GenBufName_Server(s:server)
       call s:OpenBuf(comd, bufname)
@@ -972,10 +968,7 @@ function! s:OpenBuf_Nicks(channel, ...)
       else
 	let bufname = s:GenBufName_Nicks(server, a:channel)
 	call s:OpenBuf(comd, bufname)
-	call s:InitBuf_Nicks(bufname, a:channel)
-	if chattin
-	  call s:FillBuf_Nicks(a:channel)
-	endif
+	call s:InitBuf_Nicks(bufname, a:channel, chattin)
       endif
     endif
   endif
@@ -1032,8 +1025,8 @@ function! s:OpenBuf_Command()
 endfunction
 
 function! s:EnterChanServ(split)
-  let rx = '^\s*[-+]\=\[-\=\d\+\]\(\S\+\)\%(\s\+\(\S\+\)\)\=$'
   let line = getline('.')
+  let rx = '^\s*[-+]\=\[-\=\d\+\]\(\S\+\)\%(\s\+\(\S\+\)\)\=$'
   if line =~ rx
     let channel= s:StrMatched(line, rx, '\1')
     let server = s:StrMatched(line, rx, '\2')
@@ -1053,7 +1046,9 @@ function! s:EnterChanServ(split)
     else
       call s:OpenBuf_Chat(channel, server)
     endif
+
     let s:server = save_server
+    call s:MainLoop()
   endif
 endfunction
 
@@ -1130,8 +1125,12 @@ function! s:DoSettings()
   setlocal noswapfile
   setlocal wrap
   nnoremap <buffer> <silent> <Space>  :call <SID>MainLoop()<CR>
+  nnoremap <buffer> <silent> a	      :call <SID>OpenBuf_Command()<CR>
+  nnoremap <buffer> <silent> A	      :call <SID>OpenBuf_Command()<CR>
   nnoremap <buffer> <silent> i	      :call <SID>OpenBuf_Command()<CR>
   nnoremap <buffer> <silent> I	      :call <SID>OpenBuf_Command()<CR>
+  nnoremap <buffer> <silent> o	      :call <SID>OpenBuf_Command()<CR>
+  nnoremap <buffer> <silent> O	      :call <SID>OpenBuf_Command()<CR>
   nnoremap <buffer> <silent> <C-N>    :call <SID>WalkThruChanServ(1)<CR>
   nnoremap <buffer> <silent> <C-P>    :call <SID>WalkThruChanServ(0)<CR>
 endfunction
@@ -1250,7 +1249,7 @@ function! s:InitBuf_List(bufname)
   call s:DoSettings()
   setlocal nowrap
   nnoremap <buffer> <silent> <CR> :call <SID>StartChannel()<CR>
-  " I take Mutt's keys for sorting
+  " I take Mutt's key-bindings for sorting
   nnoremap <buffer> <silent> o	  :call <SID>SortSelect()<CR>
   nnoremap <buffer> <silent> O	  :call <SID>SortReverse()<CR>
   nnoremap <buffer> <silent> R	  :call <SID>UpdateList()<CR>
@@ -1281,7 +1280,7 @@ function! s:InitBuf_Chat(bufname, nick, server)
   call s:SetBufNum(a:bufname, bufnr('%'))
 endfunction
 
-function! s:InitBuf_Nicks(bufname, channel)
+function! s:InitBuf_Nicks(bufname, channel, chattin)
   let b:server	= s:server
   let b:channel = a:channel
   let b:title	= a:channel
@@ -1291,21 +1290,36 @@ function! s:InitBuf_Nicks(bufname, channel)
   nnoremap <buffer> <silent> <CR> :call <SID>SelectNickAction()<CR>
   vnoremap <buffer> <silent> <CR> :call <SID>SelectNickAction()<CR>
   call s:SetBufNum(a:bufname, bufnr('%'))
+  if a:chattin
+    call s:FillBuf_Nicks(a:channel)
+  endif
 endfunction
 
 function! s:InitBuf_Command(bufname, channel, chattin)
   let b:server	= s:server
   let b:channel = a:channel
-  let b:query	= a:chattin ? a:channel : ''
-  let b:title	= '  '.(a:chattin ? 'Querying' : 'Posting to').' '.
+  let b:title	= '  '.(a:chattin ? 'Chatting with' : 'Posting to').' '.
 	\(strlen(a:channel) ? a:channel.' @ ' : '').s:server
   call s:DoSettings()
-  nnoremap <buffer> <silent> <CR> :call <SID>SendLine()<CR>
-  inoremap <buffer> <silent> <CR> <Esc>:call <SID>SendLine()<CR>
+  nnoremap <buffer> <silent> <CR> :call <SID>SendLines()<CR>
+  inoremap <buffer> <silent> <CR> <Esc>:call <SID>SendLines()<CR>
+  vnoremap <buffer> <silent> <CR> :call <SID>SendLines()<CR>
+  nunmap <buffer> a
+  nunmap <buffer> A
   nunmap <buffer> i
   nunmap <buffer> I
+  nunmap <buffer> o
+  nunmap <buffer> O
   " TODO: Forbid gq stuffs (?)
   call s:SetBufNum(a:bufname, bufnr('%'))
+endfunction
+
+function! s:FillBuf_Nicks(nick, ...)
+  call s:PreBufModify()
+  call s:BufClear()
+  call setline(1, a:nick)
+  call append(1, s:GetCurNick())
+  call s:PostBufModify()
 endfunction
 
 "
@@ -1428,23 +1442,25 @@ endfunction
 
 function! s:CloseBuf_Command(...)
   if !exists('s:channel')
-    " Called outside the SendLine() (command line) context
+    " Called outside the SendLines() (command line) context
     return
   endif
 
   let bufnum = s:GetBufNum_Command(s:channel)
   if bufnum >= 0 && s:SelectWindow(bufnum) >= 0
-    let force = (a:0 && a:1)
+    let chattin = s:IsNick(s:channel)
+    let force	= (a:0 && a:1)
+
     call s:NeatenBuf_Command()
     " Keep it open if in query mode
-    if force || !(strlen(b:query) || s:singlewin)
+    if force || !(chattin || s:singlewin)
       call s:CloseWindow(bufnum)
     endif
 
     " Move the cursor back onto the channel/server where command mode was
     " triggered.
     if strlen(s:channel)
-      call s:VisitBuf_Cha{s:IsChannel(s:channel) ? 'nnel' : 't'}(s:channel)
+      call s:VisitBuf_Cha{chattin ? 't' : 'nnel'}(s:channel)
     elseif !s:VisitBuf_Server()
       call s:VisitBuf_List()
     endif
@@ -1544,7 +1560,7 @@ function! s:HandleKey(key)
     if s:IsBufInfo()
       call s:EnterChanServ(0)
     elseif s:IsBufCommand()
-      call s:SendLine()
+      call s:SendLines()
     elseif s:IsBufList()
       call s:StartChannel()
     elseif s:IsBufNicks()
@@ -1618,7 +1634,7 @@ function! s:SetLastActive()
   endif
 endfunction
 
-function! s:SendLine()
+function! s:SendLines() range
   " TODO: Do confirmation before sending (preferably optionally)
   if !s:IsBufCommand()
     return
@@ -1628,33 +1644,51 @@ function! s:SendLine()
   call s:SetCurServer(b:server)
   call s:SetCurChannel(b:channel)
 
-  let line = s:ExpandAlias(s:StrTrim(getline('.')))
+  let i = a:firstline
+  while i <= a:lastline
+    let line{i} = s:ExpandAlias(s:StrTrim(getline(i)))
+    let i = i + 1
+  endwhile
+  call s:CloseBuf_Command()
+
+  try
+    let i = a:firstline
+    while i <= a:lastline
+      if strlen(line{i})
+	call s:SendLine(line{i})
+      endif
+      let i = i + 1
+    endwhile
+  catch
+    if s:inside_loop
+      throw v:exception
+    endif
+    return
+  finally
+    unlet s:channel
+  endtry
+
+  call s:SetLastActive()
+  call s:MainLoop()
+endfunction
+
+function! s:SendLine(line)
   let comd = ''
   let args = ''
 
   let rx = '^/\(\S\+\)\%(\s\+\(.\+\)\)\=$'
-  if line =~ rx
-    let comd = toupper(s:StrMatched(line, rx, '\1'))
-    let args = s:StrMatched(line, rx, '\2')
+  if a:line =~ rx
+    let comd = toupper(s:StrMatched(a:line, rx, '\1'))
+    let args = s:StrMatched(a:line, rx, '\2')
 
     " Further expand aliases
-    if comd =~# '^\%(MSG\|QUERY\)$'
-      if comd ==# 'QUERY'
-	" Just entering/quitting query mode, not sending.
-	if strlen(args)
-	  call s:StartChat(args)
-	else
-	  call s:QuitChat(b:query)
-	  if !s:inside_loop
-	    call s:MainLoop()
-	  endif
-	endif
-	return
-      endif
+    if comd =~# '^\%(CHAT\)$'
+      let comd = 'QUERY'
+    elseif comd =~# '^\%(MSG\)$'
       let comd = 'PRIVMSG'
     elseif comd =~# '^\%(ME\|DESCRIBE\)$'
       if comd ==# 'ME'
-	let args = (strlen(b:query) ? b:query : b:channel).' '.args
+	let args = s:channel.' '.args
       endif
       let comd = 'ACTION'
     elseif comd =~# '^\%(\%(RE\)\=CONNECT\)$'
@@ -1668,12 +1702,12 @@ function! s:SendLine()
     endif
 
     if strlen(args)
-      " This is only for removing a leading colon which user (unnecessarily)
-      " appended to the MESSAGE and adding back!  Silly and redundant
-      "
-      " Commands with the following form:
-      "   COMMAND [MESSAGE]
+      " These provisions are only for removing a leading colon which user
+      " (unnecessarily) appended to the MESSAGE and adding back!  Silly and
+      " redundant
       if comd =~# '^\%(G\=\%(AWAY\|QUIT\)\|WALLOPS\)$'
+	" Commands of the following syntax:
+	"   COMMAND [MESSAGE]
 	let rx = '^:\=\(.\+\)$'
 	if args =~ rx
 	  let args = s:StrMatched(args, rx, ':\1')
@@ -1687,7 +1721,7 @@ function! s:SendLine()
 	  " COMMAND TARGET [MESSAGE]
 	  let rx = '^\(\S\+\)\s\+:\=\(.\+\)$'
 
-	  " If user ommitted channels, supply the current one
+	  " If user ommitted channel(s), supply the current one
 	  if comd =~# '^\%(PART\|TOPIC\)$'
 		\ && !s:IsChannel(matchstr(args, '^\S\+'))
 		\ && strlen(s:channel)
@@ -1697,7 +1731,9 @@ function! s:SendLine()
 	  " COMMAND CHANNEL USER [MESSAGE]
 	  let rx = '^\(\S\+\s\+\S\+\)\s\+:\=\(.\+\)$'
 	endif
+
 	if strlen(rx) && args =~ rx
+	  " NOTE: Matching with empty string always results in true (!!)
 	  let args = s:StrMatched(args, rx, '\1').s:StrMatched(args, rx, ' :\2')
 	endif
       endif
@@ -1712,31 +1748,25 @@ function! s:SendLine()
 	call s:DoSend(comd, args)
       endif
     endif
-  elseif strlen(line) && s:IsConnected(s:server)
-    call s:PreSendMSG(line)
+  elseif s:IsConnected(s:server)
+    call s:PreSendMSG(a:line)
   endif
 
-  " Do some cleanups
-  call s:CloseBuf_Command() " might have been closed before we reach here
-  unlet! s:channel
-  call s:SetLastActive()
+  call s:PostSendLine(comd)
+endfunction
 
-  if comd =~# '^\%(WHO\)$'
+function! s:PostSendLine(comd)
+  if a:comd =~# '^\%(WHO\)$'
     " When receiving a bunch of lines, visit the server window beforehand:
-    " avoid the flicker caused by cursor movement between server and
-    " channel windows
+    " avoid the flicker caused by cursor movement between server and channel
+    " windows
     call s:VisitBuf_Server()
   endif
 
   " Scroll to the bottom if you are in talkative mood
-  if comd =~# '^\%(ACTION\)\=$' && strlen(line)
-	\			&& (s:IsBufChannel() || s:IsBufChat())
+  if a:comd =~# '^\%(ACTION\)\=$' && (s:IsBufChannel() || s:IsBufChat())
     call s:ExecuteSafe('keepjumps', 'normal! Gzb')
     redraw
-  endif
-
-  if !s:inside_loop
-    call s:MainLoop()
   endif
 endfunction
 
@@ -1789,37 +1819,11 @@ function! s:Cmd_SEARCH(comd)
   silent! execute 'normal!' (a:comd == '/' ? 'n' : 'N')
 endfunction
 
-function! s:StartServer(servers)
-  let servers = a:servers
-  while strlen(servers)
-    let server = matchstr(servers, '^[^,]\+')
-    call s:Cmd_SERVER(server)
-    let servers = substitute(servers, '^[^,]\+,\=', '', '')
-  endwhile
-endfunction
-
-function! s:StartChannel()
-  if exists('b:server')
-    let channel = matchstr(getline('.'), '^\S\+')
-    if s:IsChannel(channel) && s:GetConf_YN('Join channel '.channel.'?')
-      call s:SetCurServer(b:server)
-      call s:Send_JOIN('JOIN', channel)
-    endif
-  endif
-endfunction
-
-function! s:StartChat(nick, ...)
-  let retval = s:IsNick(a:nick)
-  " Open up a separate window as with DCC CHAT
-  if retval
-    call s:CloseBuf_Command()
-    call s:OpenBuf_Chat(a:nick, (a:0 ? a:1 : s:server))
-    call s:OpenBuf_Command()
-  endif
-  return retval
-endfunction
-
 function! s:SelectNickAction() range
+  if !s:IsBufNicks()
+    return
+  endif
+
   let nicks = ''
   let i = a:firstline
   while i <= a:lastline
@@ -1837,90 +1841,143 @@ function! s:SelectNickAction() range
     return
   endif
 
-  if number > 1 && !(choice % 2)
-    return s:EchoHL('Sorry, you cannot do it with mulitple persons at the same time', 'ErrorMsg')
+  if !(choice % 2) && number > 1
+    " TODO: Do it.
+    return s:EchoHL('Sorry, you cannot do it with mulitple persons '.
+		   \'at the same time', 'ErrorMsg')
   endif
 
-  if !s:IsChannel(b:channel) && (choice == 2 || choice == 3)
+  if (choice == 2 || choice == 3) && !s:IsChannel(b:channel)
     return s:EchoHL('You cannot do it unless you are on a channel.', 'ErrorMsg')
   endif
 
   " Set the current server appropriately, so the command will be sent to the
   " one user intended
   call s:SetCurServer(b:server)
+  call s:SetCurChannel(b:channel)
 
-  if choice == 1
-    while strlen(nicks)
-      let nick = matchstr(nicks, '^\S\+')
-      call s:DoSend('WHOIS', nick)
-      let nicks = substitute(nicks, '^\S\+\s*', '', '')
-    endwhile
-  elseif choice == 2
-    if s:StartChat(nicks)
-      if s:inside_loop
-	throw 'IMGONNAPOST'
-      endif
-      return
+  try
+    if choice == 1
+      call s:DoSend('WHOIS', substitute(nicks, ' ', ',', 'g'))
+    elseif choice == 2
+      call s:StartChat(nicks)
+    elseif choice == 3
+      call s:SelectNickOpVoice(nicks)
+    elseif choice == 4
+      call s:SelectNickCTCP(nicks)
     endif
-  elseif choice == 3
-    let comds = "&1 Op\n&2 Deop\n&3 Voice\n&4 Devoice"
-    let choice= confirm('Choose one of these:', comds)
-    if choice
-      let onoff = (choice % 2) ? '+' : '-'
-      let mode  = choice >= 3 ? 'v' : 'o'
-      call s:SetOpVoice(onoff, mode, nicks)
+  catch /^Vim:Interrupt$/
+  catch
+    if s:inside_loop
+      throw v:exception
     endif
-  elseif choice == 4
-    let comds = "&send\n&chat\n&ping\n&time\n&version\nclient&info"
-    let choice= confirm('Choose one of these:', comds)
-    if choice
-      let args = ''
-      if choice > 2
-	if choice == 3
-	  let args = 'ping'
-	elseif choice == 4
-	  let args = 'time'
-	elseif choice == 5
-	  let args = 'version'
-	elseif choice == 6
-	  let args = 'clientinfo'
-	endif
-	if strlen(args)
-	  call s:Send_CTCP('CTCP', nicks.' '.args)
-	endif
-      else
-	if choice == 1
-	  let fname = input('Enter filename: ')
-	  if filereadable(fname)
-	    let args = 'send '.nicks.' '.fname
-	  endif
-	else
-	  let args = 'chat '.nicks
-	endif
-	if strlen(args)
-	  call s:Send_DCC('DCC', args)
-	endif
-      endif
-    endif
-  endif
+    return
+  finally
+    unlet s:channel
+  endtry
 
   call s:HiliteLine('.')
-  if !s:inside_loop
-    call s:MainLoop()
+  call s:MainLoop()
+endfunction
+
+function! s:SelectNickOpVoice(nicks)
+  let comds = "&1 Op\n&2 Deop\n&3 Voice\n&4 Devoice"
+  let choice= confirm('Choose one of these:', comds)
+  if choice
+    let onoff = (choice % 2) ? '+' : '-'
+    let mode  = choice >= 3 ? 'v' : 'o'
+    call s:SetOpVoice(onoff, mode, a:nicks)
+  endif
+endfunction
+
+function! s:SelectNickCTCP(nicks)
+  let comds = "&send\n&chat\n&ping\n&time\n&version\nclient&info"
+  let choice= confirm('Choose one of these:', comds)
+  if !choice
+    return
+  endif
+
+  let type = choice >= 3 ? 'CTCP' : 'DCC'
+  let args = ''
+
+  if choice >= 3
+    if choice == 3
+      let args = 'ping'
+    elseif choice == 4
+      let args = 'time'
+    elseif choice == 5
+      let args = 'version'
+    elseif choice == 6
+      let args = 'clientinfo'
+    endif
+    let args = a:nicks.' '.args
+  else
+    if choice == 1
+      let fname = input('Enter filename: ')
+      if !strlen(fname)
+	return
+      endif
+      let args = 'send '.a:nicks.' '.fname
+    else
+      let args = 'chat '.a:nicks
+    endif
+  endif
+  call s:Send_{type}(type, args)
+endfunction
+
+"
+" Wrapper functions for commencing communication
+"
+
+function! s:StartServer(servers)
+  let servers = a:servers
+  while strlen(servers)
+    let server = matchstr(servers, '^[^,]\+')
+    call s:Cmd_SERVER(server)
+    let servers = substitute(servers, '^[^,]\+,\=', '', '')
+  endwhile
+endfunction
+
+function! s:StartChannel()
+  if s:IsBufList()
+    let channel = matchstr(getline('.'), '^\S\+')
+    if s:IsChannel(channel) && s:GetConf_YN('Join channel '.channel.'?')
+      call s:SetCurServer(b:server)
+      call s:Send_JOIN('JOIN', channel)
+      call s:MainLoop()
+    endif
+  endif
+endfunction
+
+" TODO: Keep track of the state of the nick you are chatting with (ison, nick
+"	change)
+function! s:StartChat(nick, ...)
+  " Open up a separate window as with DCC CHAT
+  " TODO: Accept multiple nicks
+  if s:IsNick(a:nick)
+    call s:OpenBuf_Chat(a:nick, (a:0 ? a:1 : s:server))
+    call s:OpenBuf_Command()
+    throw 'IMGONNAPOST'
+  endif
+endfunction
+
+function! s:Cmd_QUERY(args)
+  if !strlen(a:args)
+    call s:QuitChat(s:channel)
+  else
+    call s:StartChat(a:args)
   endif
 endfunction
 
 function! s:UpdateList()
-  if s:VisitBuf_List() && exists('b:server')
+  if s:IsBufList()
     call s:PreBufModify()
     call s:BufClear()
     call s:PostBufModify()
 
     call s:SetCurServer(b:server)
     call s:DoSend('LIST', '')
-    if !s:inside_loop
-      call s:MainLoop()
-    endif
+    call s:MainLoop()
   endif
 endfunction
 
@@ -1929,23 +1986,20 @@ endfunction
 "
 
 function! s:SetOpVoice(onoff, mode, args)
-  if !(strlen(b:channel) || s:IsChannel(a:args))
-    return
-  endif
-
   let nicks = a:args
-  let channel = b:channel
-  if s:IsChannel(a:args)
+  let channel = s:channel
+  if s:IsChannel(matchstr(a:args, '^\S\+'))
     let nicks = substitute(a:args, '^\S\+\s\+', '', '')
     let channel = matchstr(a:args, '^\S\+')
   endif
   if !strlen(nicks)
-    return
+    return s:PromptKey('Syntax: /op [channel] nick(s)', 'Error')
   endif
 
   let nicks = s:StrCompress(substitute(nicks, ',', ' ', 'g'))
   let number= strlen(substitute(nicks, '\S\+', '', 'g')) + 1
   let modes = s:StrMultiply(a:mode, number)
+
   call s:DoSend('MODE', channel.' '.a:onoff.modes.' '.nicks)
 endfunction
 
@@ -2708,7 +2762,7 @@ endfunction
 "	that vimirc will not get confused about which server should be
 "	addressed to.
 function! s:SetCurServer(server)
-  if a:server ==# s:server
+  if a:server ==# s:GetVimVar('s:server')
     return
   endif
 
@@ -2723,10 +2777,6 @@ function! s:SetCurServer(server)
 EOP
 endfunction
 
-" NOTE: This is also tricky: not intended to be used in conjunction with the
-"	above one, rather, to remember the channel for later closing of its
-"	command-line buffer (why close? 'cause it takes up fair amount of
-"	space so I don't like to keep it opening).
 function! s:SetCurChannel(channel)
   let s:channel = a:channel
 endfunction
@@ -2984,6 +3034,7 @@ function! s:Send_DCC(comd, args)
   let type = ''
   let nick = ''
   let desc = ''
+
   let rx = '^\(\S\+\)\%(\s\+\(\S\+\)\%(\s\+\(.\+\)\)\=\)\=$'
   if a:args =~ rx
     let type = toupper(s:StrMatched(a:args, rx, '\1'))
@@ -2995,8 +3046,7 @@ function! s:Send_DCC(comd, args)
       if type ==# 'SEND'
 	let desc = s:RegularizePath(desc)
 	if !filereadable(desc)
-	  " TODO: Emit some error message
-	  return
+	  return s:PromptKey('File '.desc.' not available', 'Error')
 	endif
       endif
     endif
@@ -3007,116 +3057,9 @@ function! s:Send_DCC(comd, args)
 
   perl <<EOP
 {
-  my $type = VIM::Eval('l:type');
-  my $nick = VIM::Eval('l:nick');
-  my $desc = VIM::Eval('l:desc');
-
-  my $dcc;
-
-  if ($type eq 'CLOSE')
-    {
-      # /dcc close type [nick]
-      $type = uc($nick);
-      $nick = $desc;
-      # Hmm, can't specify files
-
-      if ($type)
-	{
-	  for (my $i = 1; $i < $#DCC_TYPES; $i++)
-	    {
-	      if ($type eq $DCC_TYPES[$i])
-		{
-		  $type = $i;
-		  last;
-		}
-	    }
-	  unless ($type & $DCC_TYPE)
-	    {
-	      $type = 0;
-	    }
-	}
-
-      while ($dcc = find_dccclient($nick, $type, $desc))
-	{
-	  dcc_close($dcc);
-	}
-      return;
-    }
-  elsif ($type eq 'LIST')
-    {
-      dcc_show_list();
-      return;
-    }
-  elsif ($type eq 'GET')
-    {
-      $dcc = find_dccclient($nick, $DCC_FILERECV, $desc);
-      if ($dcc && ($dcc->{'flags'} & $DCC_ACTIVE))
-	{
-	  return;
-	}
-    }
-  elsif ($type eq 'SEND')
-    {
-      $dcc = find_dccclient($nick, $DCC_FILESEND, $desc);
-      if ($dcc)	  # already active or in queue
-	{
-	  return;
-	}
-      else
-	{
-	  $dcc = add_dccclient();
-	  if ($dcc)
-	    {
-	      my ($fname) = ($desc =~ m#^(?:.*/)?(.+)$#);
-
-	      $dcc->{'nick'}  = $nick;
-	      $dcc->{'flags'} = $DCC_FILESEND;
-	      $dcc->{'desc'}  = do_urlencode($fname);
-	      $dcc->{'fname'} = $desc;
-	      $dcc->{'fsize'} = (-s $desc);
-	    }
-	}
-    }
-  elsif ($type eq 'CHAT')
-    {
-      # Reuse already connected one, if found
-      $dcc = find_dccclient($nick, $DCC_CHATSEND);
-      if ($dcc) # it must already be in queue on the peer side
-	{
-	  return;
-	}
-      else
-	{
-	  $dcc = find_dccclient($nick, $DCC_CHATRECV);
-	  unless ($dcc)
-	    {
-	      $dcc = add_dccclient();
-	      if ($dcc)
-		{
-		  $dcc->{'nick'} = $nick;
-		  $dcc->{'flags'}= $DCC_CHATSEND;
-		  $dcc->{'desc'} = lc($type);
-		}
-	    }
-	  if ($dcc)
-	    {
-	      vim_open_chat("=$nick", $dcc->{'iserver'}->{'server'});
-	    }
-	}
-    }
-
-  if ($dcc)
-    {
-      if ($dcc->{'flags'} & $DCC_QUEUED)
-	{
-	  dcc_they_accept($dcc);
-	}
-      elsif (!($dcc->{'flags'} & $DCC_ACTIVE))
-	{
-	  $dcc->{'flags'} |= $DCC_QUEUED;
-	  dcc_open($dcc);
-	}
-    }
+  dcc_comd( scalar(VIM::Eval('l:type')),
+	    scalar(VIM::Eval('l:nick')),
+	    scalar(VIM::Eval('l:desc')) );
 }
 EOP
 endfunction
@@ -3166,11 +3109,6 @@ function! s:Send_JOIN(comd, args)
     }
 }
 EOP
-  " I don't like to call CloseBuf_Command() in various places, but I just want
-  " to be in the last opened channel
-  let bufnum = bufnr('%')
-  call s:CloseBuf_Command(1)
-  call s:SelectWindow(bufnum)
 endfunction
 
 function! s:Send_LIST(comd, args)
@@ -3187,8 +3125,8 @@ function! s:Send_NAMES(comd, args)
   let rx = '^\(\S\+\)\%(\s\+\(\S\+\)\)\=$'
   let chans = s:StrMatched(a:args, rx, '\1')
   let server= s:StrMatched(a:args, rx, '\2')
-  if !strlen(chans) && exists('b:channel')
-    let chans = b:channel
+  if !strlen(chans)
+    let chans = s:channel
   else
     call s:VisitBuf_Server()
   endif
@@ -3233,8 +3171,8 @@ function! s:Send_NICK(comd, args)
 endfunction
 
 function! s:Send_PART(comd, args)
-  let args = strlen(a:args) ? a:args : (exists('b:channel')
-	\				? b:channel.' '.s:partmsg : '')
+  let args = strlen(a:args) ? a:args : (s:IsChannel('s:channel')
+	\				? s:channel.' '.s:partmsg : '')
   if !strlen(args)
     return
   endif
@@ -3334,9 +3272,8 @@ endfunction
 function! s:PreSendMSG(mesg)
   let mesg = substitute(a:mesg, '^/\s*', '', '')
   if strlen(mesg)
-    let target = strlen(b:query) ? b:query : b:channel
-    if strlen(target)
-      call s:SendMSG('PRIVMSG', target.' :'.mesg)
+    if strlen(s:channel)
+      call s:SendMSG('PRIVMSG', s:channel.' :'.mesg)
     else
       call s:PromptKey('You are not on a channel.', 'Error')
     endif
@@ -3701,7 +3638,7 @@ sub irc_chan_line
   my $peek  = 0;
   my $orgbuf= VIM::Eval("bufnr('%')");
 
-  if (is_channel($chan) && $cref)
+  if ($cref)
     {
       unless (vim_visit_channel($chan))
 	{
@@ -3726,7 +3663,7 @@ sub irc_chan_line
 	}
     }
 
-  irc_add_line({ 'cref' => $cref, 'orgbuf' => $orgbuf, 'peek' => $peek }, \@_);
+  irc_add_line({ 'cref' => $cref, 'peek' => $peek, 'orgbuf' => $orgbuf }, \@_);
 }
 
 sub irc_chat_line
@@ -3750,7 +3687,7 @@ sub irc_chat_line
       vim_open_chat($nick, $Current_Server->{'server'});
     }
 
-  irc_add_line({ 'cref' => $chat, 'orgbuf' => $orgbuf, 'peek' => $peek }, \@_);
+  irc_add_line({ 'cref' => $chat, 'peek' => $peek, 'orgbuf' => $orgbuf }, \@_);
 }
 
 sub irc_recv
@@ -5044,6 +4981,114 @@ sub dcc_check
 	}
     }
   return 1;
+}
+
+sub dcc_comd
+{
+  my ($type, $nick, $desc) = @_;
+  my $dcc;
+
+  if ($type eq 'CLOSE')
+    {
+      # /dcc close type [nick]
+      $type = uc($nick);
+      $nick = $desc;
+      # Hmm, can't specify files
+
+      if ($type)
+	{
+	  for (my $i = 1; $i < $#DCC_TYPES; $i++)
+	    {
+	      if ($type eq $DCC_TYPES[$i])
+		{
+		  $type = $i;
+		  last;
+		}
+	    }
+	  unless ($type & $DCC_TYPE)
+	    {
+	      $type = 0;
+	    }
+	}
+
+      while ($dcc = find_dccclient($nick, $type, $desc))
+	{
+	  dcc_close($dcc);
+	}
+      return;
+    }
+  elsif ($type eq 'LIST')
+    {
+      dcc_show_list();
+      return;
+    }
+  elsif ($type eq 'GET')
+    {
+      $dcc = find_dccclient($nick, $DCC_FILERECV, $desc);
+      if ($dcc && ($dcc->{'flags'} & $DCC_ACTIVE))
+	{
+	  return;
+	}
+    }
+  elsif ($type eq 'SEND')
+    {
+      if ($dcc = find_dccclient($nick, $DCC_FILESEND, $desc))
+	{
+	  # already active or in queue
+	  return;
+	}
+      else
+	{
+	  if ($dcc = add_dccclient())
+	    {
+	      my ($fname) = ($desc =~ m#^(?:.*/)?(.+)$#);
+
+	      $dcc->{'nick'}  = $nick;
+	      $dcc->{'flags'} = $DCC_FILESEND;
+	      $dcc->{'desc'}  = do_urlencode($fname);
+	      $dcc->{'fname'} = $desc;
+	      $dcc->{'fsize'} = (-s $desc);
+	    }
+	}
+    }
+  elsif ($type eq 'CHAT')
+    {
+      # Reuse already connected one, if found
+      if ($dcc = find_dccclient($nick, $DCC_CHATSEND))
+	{
+	  # it must already be in queue on the peer side
+	  return;
+	}
+      else
+	{
+	  unless ($dcc = find_dccclient($nick, $DCC_CHATRECV))
+	    {
+	      if ($dcc = add_dccclient())
+		{
+		  $dcc->{'nick'} = $nick;
+		  $dcc->{'flags'}= $DCC_CHATSEND;
+		  $dcc->{'desc'} = lc($type);
+		}
+	    }
+	  if ($dcc)
+	    {
+	      vim_open_chat("=$nick", $dcc->{'iserver'}->{'server'});
+	    }
+	}
+    }
+
+  if ($dcc)
+    {
+      if ($dcc->{'flags'} & $DCC_QUEUED)
+	{
+	  dcc_they_accept($dcc);
+	}
+      elsif (!($dcc->{'flags'} & $DCC_ACTIVE))
+	{
+	  $dcc->{'flags'} |= $DCC_QUEUED;
+	  dcc_open($dcc);
+	}
+    }
 }
 
 #
