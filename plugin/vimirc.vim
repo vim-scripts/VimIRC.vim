@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 Feb 2004
-" Last Change: Fri, 09 Apr 2004 01:00:53 +0900 (JST)
+" Last Change: Fri, 09 Apr 2004 16:56:07 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -203,7 +203,7 @@ endif
 let s:save_cpoptions = &cpoptions
 set cpoptions&
 
-let s:version = '0.7.1'
+let s:version = '0.7.2'
 let s:client  = 'VimIRC '.s:version
 " Set this to zero when releasing, which I'll occasionally forget, for sure
 let s:debug = 0
@@ -462,7 +462,8 @@ function! s:DoAutocmds()
     " NOTE: Cannot use CursorHold to auto re-enter the loop: getchar() won't
     "	    get a char since key inputs will never be waited after that event.
     execute 'autocmd CursorHold' s:bufname_prefix.'* call s:OfflineMsg()'
-    execute 'autocmd BufHidden' s:bufname_channel.'* call s:CloseNicks(b:channel)'
+    execute 'autocmd BufHidden' s:bufname_channel.'* call s:PreCloseChannel()'
+    execute 'autocmd BufHidden' s:bufname_chat.'* call s:PreCloseChat()'
   augroup END
 endfunction
 
@@ -927,7 +928,7 @@ function! s:InitBuf_Command(bufname, channel)
 endfunction
 
 function! s:InitBuf_Chat(bufname, nick, server)
-  " NOTE: a:server is the name of the IRC server, not the peer's
+  " NOTE: a:server is the name of the IRC server, not the dcc peer's
   let b:server	= a:server
   let b:channel = a:nick
   let b:title	= '  Chatting with '.a:nick
@@ -945,12 +946,12 @@ function! s:CloseServer()
   " Close other related windows before closing the server window
   call s:CloseCommand(1)
   call s:CloseList()
+  call s:CloseChats()
 
   let bufnum = s:GetBufNum_Server()
   if bufnum >= 0
     if 1 || s:winmode ==? 'single'
-      " We'll miss logging the last "ERROR :Closing Link" line.  Well, what's
-      " the matter?
+      " We'll miss the last "ERROR :Closing Link" line.  Well, who cares?
       call s:LogBuffer(bufnum)
     endif
     call s:CloseWindow(bufnum)
@@ -964,13 +965,20 @@ function! s:CloseList()
   endif
 endfunction
 
+function! s:PreCloseChannel()
+  let abuf = expand('<abuf>') + 0
+  let chan = getbufvar(abuf, 'channel')
+  if strlen(chan) " validity check
+    call s:LogBuffer(abuf)
+    call s:CloseNicks(chan)
+  endif
+endfunction
+
 function! s:CloseChannel(channel)
   let bufnum = s:GetBufNum_Channel(a:channel)
   if bufnum >= 0
-    call s:LogBuffer(bufnum)
     call s:CloseWindow(bufnum)
   endif
-  call s:CloseNicks(a:channel)
 endfunction
 
 function! s:CloseNicks(channel)
@@ -1017,6 +1025,27 @@ function! s:CloseCommand(force)
   endif
 endfunction
 
+function! s:CloseChats()
+  wincmd b
+  while 1
+    if s:IsBufChat() && b:server ==# s:server
+      call s:CloseChat(b:channel, b:server)
+    else
+      if winnr() == 1
+	break
+      endif
+      wincmd W
+    endif
+  endwhile
+endfunction
+
+function! s:PreCloseChat()
+  let abuf = expand('<abuf>') + 0
+  if strlen(getbufvar(abuf, 'channel'))
+    call s:LogBuffer(abuf)
+  endif
+endfunction
+
 function! s:CloseChat(nick, server)
   let save_server = s:server
   let s:server = a:server
@@ -1028,7 +1057,6 @@ function! s:CloseChat(nick, server)
 
   let bufnum = s:GetBufNum_Chat(a:nick, a:server)
   if bufnum >= 0
-    call s:LogBuffer(bufnum)
     call s:CloseWindow(bufnum)
   endif
 
@@ -1039,7 +1067,7 @@ function! s:CloseVimIRC()
   wincmd b
   let v:errmsg = ''
   while 1
-    if !match(bufname('%'), s:bufname_prefix)
+    if s:IsBufIRC()
       silent! close
       if strlen(v:errmsg)
 	enew
@@ -1402,10 +1430,20 @@ endfunction
 
 function! s:LogBuffer(bufnum)
   if s:log && s:SelectWindow(a:bufnum) >= 0 && s:MakeDir(s:logdir)
+    let range = '%'
+    if exists('b:lastsave')
+      if b:lastsave >= line('$')
+	return
+      endif
+      let range = (b:lastsave + 1).',$'
+    endif
+
+    let logfile = s:logdir.'/'.s:GenFName_Log()
     let v:errmsg = ''
-    let range = ((exists('b:lastsave') && b:lastsave < line('$')
-	  \	  ? b:lastsave : 0) + 1).',$'
-    silent! execute range.'write! >>' s:logdir.'/'.s:GenFName_Log()
+    execute 'redir >>' logfile
+      silent echo '(Logged at' s:GetTime(0).")\n"
+    redir END
+    silent! execute range.'write! >>' logfile
     let b:lastsave = line('$')
   endif
 endfunction
@@ -1439,7 +1477,7 @@ function! s:OfflineMsg()
   echo s:IsSockOpen() ? s:IsBufCommand()
 	\		? 'Hitting <CR> will send out the current line'
 	\		: 'Hit <Space> to get online'
-	\	      : 'Do /SERVER command to get connected'
+	\	      : 'Do /SERVER to get connected'
 endfunction
 
 function! s:UpdateTitleBar()
@@ -3447,6 +3485,11 @@ sub dcc_chat_line
   foreach my $line (split(/\x0D?\x0A/, $dcc->{'linebuf'}))
     {
       my $action = ($line =~ s/^\x01ACTION (.*?)\x01/$1/);
+
+      unless ($itsme)
+	{
+	  vim_beep(1 + $action);
+	}
 
       if ($ENC_VIM && $ENC_IRC)
 	{
