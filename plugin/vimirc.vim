@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 Feb 2004
-" Last Change: Tue, 01 Mar 2005 23:54:25 +0900 (JST)
+" Last Change: Wed, 02 Mar 2005 22:16:35 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -288,7 +288,7 @@
 if exists('g:loaded_vimirc') || &compatible
   finish
 endif
-let s:version = '0.9.8'
+let s:version = '0.9.9'
 
 let s:debug = (s:version =~# '-devel$')
 if !s:debug
@@ -609,6 +609,8 @@ function! s:StartVimIRC(...)
   call s:SetCmds()
   call s:SetAutocmds()
   call s:SetEncoding()
+  " Set VimIRC's cursor color
+  call s:SetHlCursor()
 
   " Initialize perl codes
   call s:PerlIRC()
@@ -677,9 +679,17 @@ function! s:MainLoop()
     echo ''
     " Show line-cursor, so the user can easily recognize that she is online
     call s:HiliteLine('.')
+    call s:ToggleCursor(1)
 
     while 1
-      call s:HandleKey(getchar(0))
+      try
+	call s:HandleKey(getchar(0))
+      catch /:E\%(35\|486\|492\):/
+	" Catch some familiar errors
+	call s:EchoError(s:StrDivide(v:exception, 0))
+      catch /:E132:/
+	" Pressed the same key for a long time.  Just ignore it.
+      endtry
       if s:DoTimer(!s:RecvData())
 	break
       endif
@@ -694,8 +704,9 @@ function! s:MainLoop()
   catch
     echoerr v:exception
   finally
-    call s:HiliteClear()
     let s:inside_loop = 0
+    call s:HiliteClear()
+    call s:ToggleCursor(0)
   endtry
 endfunction
 
@@ -1305,6 +1316,7 @@ function! s:DoSettings()
   setlocal nonumber
   setlocal noswapfile
   setlocal wrap
+
   nnoremap <buffer> <silent> <Space>  :call <SID>MainLoop()<CR>
   nnoremap <buffer> <silent> <CR>     :call <SID>StartWeb()<CR>
   nnoremap <buffer> <silent> a	      :call <SID>OpenBuf_Command()<CR>
@@ -1320,6 +1332,8 @@ function! s:DoSettings()
   nnoremap <buffer> <silent> <C-L>    :call <SID>ResizeWin(1)<CR>
   nnoremap <buffer> <silent> <C-N>    :call <SID>WalkThruChanServ(1)<CR>
   nnoremap <buffer> <silent> <C-P>    :call <SID>WalkThruChanServ(0)<CR>
+  nnoremap <buffer> <silent> <F1>     :call <SID>Cmd_HELP()<CR>
+
   call s:HiliteClear()
 endfunction
 
@@ -1841,28 +1855,18 @@ endfunction
 "
 
 function! s:HandleKey(key)
-  if !a:key
+  if ''.a:key == '0'
+    " Accepting string values
     return
   endif
+  " Special keys such as <F1> are char values already (f_getchar() in eval.c)
+  let char = a:key ? nr2char(a:key) : a:key
 
-  try
-    call s:DoHandleKey(a:key)
-  catch /:E\%(35\|486\|492\):/
-    " Catch some familiar errors
-    call s:EchoError(s:StrDivide(v:exception, 0))
-  catch /:E132:/
-  finally
-    call s:SetLastActive()
-  endtry
-endfunction
-
-function! s:DoHandleKey(key)
-  let char = nr2char(a:key)
   " TODO: User-configurable maps
   " Place movement commands earlier, to get quick response
-  if char =~# '[ p]'	" scroll forward/backward
+  if char =~# '^[ p]$'	" scroll forward/backward
     call s:DoNormal(nr2char(2 * (char == ' ' ? 3 : 1)))
-  elseif (  char =~# '[jkhlwbeWBE^$0*#nN+\-;GHLM]'
+  elseif (  char =~# '^[jkhlwbeWBE^$0*#nN+\-;GHLM]$'
 	\|| char == "\<C-B>" || char == "\<C-F>"
 	\|| char == "\<C-D>" || char == "\<C-U>"
 	\|| char == "\<C-E>" || char == "\<C-Y>"
@@ -1870,7 +1874,7 @@ function! s:DoHandleKey(key)
 	\|| char == "\<C-J>")
     " One char commands
     call s:DoNormal(char)
-  elseif char =~# '[`FTfgmtz]'
+  elseif char =~# '^[`FTfgmtz]$'
     " Commands which take a second char
     call s:DoNormal(char.nr2char(getchar()))
   elseif (char + 0) || char == "\<C-W>"
@@ -1897,24 +1901,24 @@ function! s:DoHandleKey(key)
     call s:DoNormal("1\<C-I>")
   elseif char == "\<C-L>"
     call s:ResizeWin(1)
-  elseif char =~# '[:]'
+  elseif char =~# '^[:]$'
     if s:Execute(input(':'))
       " Pause for commands which produce outputs
       return s:HandlePromptKey('Hit any key to continue')
     endif
-  elseif char =~# '[ORo]' && s:IsBufList()
+  elseif char =~# '^[ORo]$' && s:IsBufList()
     if char ==# 'R'
       call s:UpdateList()
     else
       call s:Sort{char ==# 'o' ? 'Select' : 'Reverse'}()
     endif
-  elseif char =~# '[AIOaio]'
+  elseif char =~# '^[AIOaio]$'
     call s:HiliteClear()
     if s:IsBufCommand()
       " Position cursor at an appropriate place
       if char ==# 'I'
 	call s:DoNormal('^')
-      elseif char =~? '[io]'
+      elseif char =~? '^[io]$'
 	" I think most users expect "i" to open a new input line
 	call s:OpenNewLine()
       endif
@@ -1923,7 +1927,7 @@ function! s:DoHandleKey(key)
       call s:OpenBuf_Command()
     endif
     throw 'IMGONNAPOST'
-  elseif char =~# '[/?]'
+  elseif char =~# '^[/?]$'
     call s:SearchWord(char)
   elseif char == "\<CR>"
     if s:IsBufInfo()
@@ -1935,17 +1939,27 @@ function! s:DoHandleKey(key)
     else
       call s:StartWeb()
     endif
+  elseif char == "\<S-CR>"
+    call s:StartWeb()
+  elseif char == "\<F1>"
+    " XXX: THIS DOES NOT WORK!!
+    call s:Cmd_HELP()
   elseif char ==? 'q'
     call s:QuitWhat(char ==# 'Q')
   endif
 
   call s:Hilite{s:IsBufInfo() ? 'Line' : 'Column'}('.')
   " Speed up jjjjjjjjjjjjj like inputs
-  if getchar(0) == a:key
+  if a:key && getchar(0) == a:key
     " Discard excessive keytypes (Chalice)
     while getchar(0)|endwhile
-    return s:DoHandleKey(a:key)
+    return s:HandleKey(a:key)
   endif
+
+  " KLUGE: Without this, keys such as <C-CR> keep generating the key codes
+  " automatically.
+  call s:DoNormal('lh', 1)
+  call s:SetLastActive()
 endfunction
 
 " Make use of the key input for the 'Hit any key to continue' prompt
@@ -2710,8 +2724,8 @@ function! s:GenFName_Log()
   " I'm prepending your nick to avoid corrupted data in case you're running
   " several instances.  No locking.
   return s:EscapeFName(s:GetCurNick().'@'.b:server.(exists('b:channel')
-	\					      ? '.'.b:channel
-	\					      : ''))
+	\					    ? '.'.b:channel
+	\					    : ''))
 endfunction
 
 "
@@ -2966,20 +2980,39 @@ endfunction
 " Interactive functions
 
 function! s:GetConf_YN(mesg)
+  if s:inside_loop
+    call s:ToggleCursor(0)
+  endif
+
   call s:EchoHL(' '.a:mesg.'? (y/[n]): ', 'Question')
   let char = getchar()
+
+  if s:inside_loop
+    call s:ToggleCursor(1)
+  endif
   call s:ScreenClear(0)
   return (nr2char(char) ==? 'y')
 endfunction
 
 function! s:Input(mesg, ...)
-  let input = s:StrCompress(input(a:mesg.': ', (a:0 ? a:1 : '')))
-  call s:ScreenClear(0)
-  return input
+  return s:RequestInput(0, a:mesg, (a:0 ? a:1 : ''))
 endfunction
 
 function! s:InputS(mesg)
-  let input = s:StrCompress(inputsecret(a:mesg.': '))
+  return s:RequestInput(1, a:mesg, '')
+endfunction
+
+function! s:RequestInput(secret, mesg, text)
+  if s:inside_loop
+    call s:ToggleCursor(0)
+  endif
+
+  let input = s:StrCompress(a:secret ? inputsecret(a:mesg.': ')
+	\			     : input(a:mesg.': ', a:text))
+
+  if s:inside_loop
+    call s:ToggleCursor(1)
+  endif
   call s:ScreenClear(0)
   return input
 endfunction
@@ -3237,24 +3270,60 @@ function! s:ScreenScroll(cnt)
   endif
 endfunction
 
-" Highlighting (no syntax-highlighting stuffs)
+" Highlighting-related (no syntax-highlighting) stuffs
 
-function! s:GetHlGroup(group)
-  return hlexists(a:group) ? a:group : s:GetHlCursor()
+function! s:GetHilite(name, mode)
+  return synIDattr(synIDtrans(hlID(a:name)), a:mode)
 endfunction
 
+function! s:SetHilite(name, fg, bg)
+  let mode = has('gui') ? 'gui' : 'cterm'
+  let fg = strlen(a:fg) ? a:fg : 'NONE'
+  let bg = strlen(a:bg) ? a:bg : 'NONE'
+  execute 'highlight '.a:name.' '.mode.'fg='.fg.' '.mode.'bg='.bg
+endfunction
+
+function! s:GetHlGroup(group)
+  return hlexists(a:group) ? a:group : s:SetHlCursor()
+endfunction
+
+if 0
 function! s:GetHlCursor()
-  return has('gui') ? 'Cursor' : 'DiffText'
+  return s:SetHlCursor()
+endfunction
+endif
+
+function! s:SetHlCursor()
+  let name = 'VimIRCCursor'
+  if !hlexists(name)
+    let s:fgcolor_cursor = s:GetHilite('Cursor', 'fg')
+    let s:bgcolor_cursor = s:GetHilite('Cursor', 'bg')
+    if !(strlen(s:fgcolor_cursor) || strlen(s:bgcolor_cursor))
+      let s:fgcolor_cursor = s:GetHilite('DiffText', 'fg')
+      let s:bgcolor_cursor = s:GetHilite('DiffText', 'bg')
+    endif
+    call s:SetHilite(name, s:fgcolor_cursor, s:bgcolor_cursor)
+  endif
+
+  return name
+endfunction
+
+function! s:ToggleCursor(hide)
+  if has('gui')
+    let fg = a:hide ? '' : s:fgcolor_cursor
+    let bg = a:hide ? '' : s:bgcolor_cursor
+    call s:SetHilite('Cursor', fg, bg)
+  endif
 endfunction
 
 function! s:HiliteColumn(bogus, ...)
-  call s:ExecuteSilent('match '.s:GetHlGroup(a:0 ? a:1 : '').' /\%#\S*/')
+  execute 'match '.s:GetHlGroup(a:0 ? a:1 : 'VimIRCCursor').' /\%#\S*/'
   call s:ScreenClear(0)
 endfunction
 
 function! s:HiliteLine(lnum, ...)
-  call s:ExecuteSilent('match '.s:GetHlGroup(a:0 ? a:1 : '').
-		      \' /^.*\%'.(a:lnum ? a:lnum : line(a:lnum)).'l.*$/')
+  execute 'match '.s:GetHlGroup(a:0 ? a:1 : 'VimIRCCursor').
+			  \' /^.*\%'.(a:lnum ? a:lnum : line(a:lnum)).'l.*$/'
   call s:ScreenClear(0)
 endfunction
 
