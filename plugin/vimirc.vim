@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 February 2004
-" Last Change: Mon, 29 Mar 2004 16:39:19 +0900 (JST)
+" Last Change: Wed, 31 Mar 2004 20:56:43 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -10,6 +10,8 @@
 "   KoRoN		creator of a BBS viewer for Vim, Chalice (very popular
 "			among Japanese vim community)
 "   Ilya Sher		an idea for mini-buffers for cmdline editing
+"   morbuz		pointing out the error "E28: No such highlight group"
+"			with s:Hilite* functions
 "
 " Features:
 "   * real-time message receiving with user interaction (many of the normal
@@ -145,22 +147,22 @@
 "   * multibyte support (done? I don't think so)
 "   * logging
 "   * authentication (just add one line to send PASS)
-"   * auto reconnect/rejoin
 "   * flood protection
 "   * SSL
 "   * IPv6
 "   * command-line completion (with tab key)
 "   * scripting (?)
-"   * ctcp, including dcc stuffs (mostly done)
 "   * nicks auto-identification
 "   * help
 "   * menus
+"   * ctcp, including dcc stuffs (mostly done)
 "   * etc. etc.
 "
 "   Done:
 "   - command-line history (?)
 "   - separate listing of channels with sorting facilities
 "   - netsplit detection (?)
+"   - auto reconnect/rejoin (?)
 "
 
 if exists('g:loaded_vimirc') || &compatible
@@ -170,8 +172,8 @@ endif
 let s:save_cpoptions = &cpoptions
 set cpoptions&
 
-let s:version = '0.6.4'
-let s:client = 'VimIRC '.s:version
+let s:version = '0.6.6'
+let s:client  = 'VimIRC '.s:version
 " Set this to zero when releasing, which I'll occasionally forget, for sure
 let s:debug = 0
 
@@ -413,13 +415,14 @@ function! s:DoAutocmds()
     " NOTE: Cannot use CursorHold to auto re-enter the loop: getchar() won't
     "	    get a char since key inputs will never be waited after that event.
     execute 'autocmd CursorHold' s:bufname_prefix.'* call s:OfflineMsg()'
+    execute 'autocmd BufHidden' s:bufname_channel.'* call s:CloseNicks(b:channel)'
   augroup END
 endfunction
 
 function! s:UndoAutocmds()
   augroup VimIRC
     autocmd! CursorHold
-    "autocmd! BufHidden
+    autocmd! BufHidden
   augroup END
 endfunction
 
@@ -788,11 +791,11 @@ endfunction
 function! s:DoHilite_Server()
   call s:DoHilite_Channel()
   syntax match VimIRCWallop display "!\S\+!" contained containedin=VimIRCUserHead
-  syntax region VimIRCUnderline matchgroup=VimIRCIgnore start="" end=""
+  "syntax region VimIRCUnderline matchgroup=VimIRCIgnore start="" end=""
 
   highlight link VimIRCWallop	    WarningMsg
-  highlight link VimIRCUnderline    Underlined
-  highlight link VimIRCIgnore	    Ignore
+  "highlight link VimIRCUnderline    Underlined
+  "highlight link VimIRCIgnore	    Ignore
 endfunction
 
 function! s:DoHilite_List()
@@ -920,8 +923,12 @@ endfunction
 function! s:CloseList()
   let bufnum = s:GetBufNum_List()
   if bufnum >= 0
+    let v:errmsg = ''
     while s:SelectWindow(bufnum) >= 0
       silent! close
+      if strlen(v:errmsg
+	break
+      endif
     endwhile
   endif
 endfunction
@@ -930,50 +937,72 @@ function! s:CloseChannel(channel)
   " XXX: No fear of endless loop?
   let bufnum = s:GetBufNum_Channel(a:channel)
   if bufnum >= 0
+    let v:errmsg = ''
     while s:SelectWindow(bufnum) >= 0
       silent! close
+      if strlen(v:errmsg)
+	break
+      endif
     endwhile
   endif
-
-  let bufnum = s:GetBufNum_Nicks(a:channel)
-  if bufnum >= 0
-    while s:SelectWindow(bufnum) >= 0
-      silent! close
-    endwhile
-  endif
+  call s:CloseNicks(a:channel)
   redraw
 endfunction
 
+function! s:CloseNicks(channel)
+  let bufnum = s:GetBufNum_Nicks(a:channel)
+  if bufnum >= 0
+    let v:errmsg = ''
+    while s:SelectWindow(bufnum) >= 0
+      silent! close
+      if strlen(v:errmsg)
+	break
+      endif
+    endwhile
+  endif
+endfunction
+
 function! s:CloseCommand(force)
-  if exists('s:channel')
-    let bufnum = s:GetBufNum_Command(s:channel)
-    if bufnum >= 0 && s:SelectWindow(bufnum) >= 0
-      call s:PreBufModify()
-      if line('.') != line('$')
-	move $
-      endif
-      call s:BufTrim()
-      " Remove duplicates, if any
-      if line('$') > 1
-	call s:ExecuteSafe('keepjumps', 'normal! G$')
-	while search('^\V'.getline('$').'\$', 'w') && line('.') != line('$')
-	  delete _
-	  .-1
-	endwhile
-      endif
-      call s:PostBufModify()
-      if a:force || !strlen(b:query)	" don't close if in query mode
-	while s:SelectWindow(bufnum) >= 0
-	  silent! close
-	endwhile
-	" Move the cursor back onto the channel where command mode was
-	" triggered.
-	if strlen(s:channel)
-	  call s:VisitChannel(s:channel)
-	endif
-      endif
-      redraw
+  if !exists('s:channel')
+    return
+  endif
+
+  let bufnum = s:GetBufNum_Command(s:channel)
+  if bufnum >= 0 && s:SelectWindow(bufnum) >= 0
+    call s:PreBufModify()
+    if line('.') != line('$')
+      move $
     endif
+    call s:BufTrim()
+    " Remove duplicates, if any
+    if line('$') > 1
+      call s:ExecuteSafe('keepjumps', 'normal! G$')
+      while search('^\V'.getline('$').'\$', 'w') && line('.') != line('$')
+	delete _
+	.-1
+      endwhile
+    endif
+    if strlen(b:query) && strlen(getline('$'))
+      call append('$', '')
+    endif
+    call s:PostBufModify()
+
+    if a:force || !strlen(b:query)	" don't close if in query mode
+      let v:errmsg = ''
+      while s:SelectWindow(bufnum) >= 0
+	silent! close
+	if strlen(v:errmsg)
+	  break
+	endif
+      endwhile
+      " Move the cursor back onto the channel where command mode was
+      " triggered.
+      if strlen(s:channel)
+	call s:VisitChannel(s:channel)
+	call s:HiliteLine('.')
+      endif
+    endif
+    redraw
   endif
 endfunction
 
@@ -1018,11 +1047,10 @@ function! s:CloseVimIRC()
 	break
       endif
     else
-      let winnum = winnr()
-      wincmd W
-      if winnr() == winnum
+      if winnr() == 1
 	break
       endif
+      wincmd W
     endif
   endwhile
 endfunction
@@ -1052,6 +1080,11 @@ function! s:HandleKey(key)
   elseif char =~# '[iI]'
     call s:OpenBuf_Command()
     throw 'IMGONNAPOST'
+  elseif char =~# '[aA]'
+    if s:IsBufCommand()
+      startinsert!
+      throw 'IMGONNAPOST'
+    endif
   elseif char =~# '[/?]'
     call s:SearchWord(char)
   elseif char == "\<CR>"
@@ -1573,18 +1606,17 @@ function! s:ExecuteSafe(prefix, comd)
   execute (exists(':'.a:prefix) == 2 ? a:prefix : '') a:comd
 endfunction
 
+function! s:GetHiliteCursor()
+  return has('gui') ? 'Cursor' : 'DiffText'
+endfunction
+
 function! s:HiliteColumn(bogus, ...)
-  if 1
-    execute 'match' (a:0 ? a:1 : 'Cursor') '/\%#\S*/'
-  else
-    execute 'match' (a:0 ? a:1 : 'Cursor') '/\%#/'
-  endif
+  silent! execute 'match' (a:0 ? a:1 : s:GetHiliteCursor()) '/\%#\S*/'
 endfunction
 
 function! s:HiliteLine(lnum, ...)
-  execute 'match' (a:0 ? a:1 : 'Cursor') '/^.*\%'.(a:lnum
-	\					    ? a:lnum
-	\					    : line(a:lnum)).'l.*$/'
+  silent! execute 'match' (a:0 ? a:1 : s:GetHiliteCursor())
+	\ '/^.*\%'.(a:lnum ? a:lnum : line(a:lnum)).'l.*$/'
 endfunction
 
 function! s:GetTime(short, ...)
@@ -1795,6 +1827,23 @@ function! s:Send_ACTION(comd, args)
 EOP
 endfunction
 
+function! s:Send_AWAY(comd, args)
+  perl <<EOP
+{
+  if (my $mesg = (VIM::Eval('a:args') =~ /^:(.+)$/))
+    {
+      $Current_Server->{'away'} = $mesg;
+      irc_send("AWAY :%s", $mesg);
+    }
+  else
+    {
+      $Current_Server->{'away'} = undef;
+      irc_send("AWAY");
+    }
+}
+EOP
+endfunction
+
 function! s:Send_DCC(comd, args)
   " /DCC SEND nick file
   let type = ''
@@ -1950,15 +1999,25 @@ function! s:Send_JOIN(comd, args)
     }
   else
     {
-      foreach my $chan (split(/,/, $chans))
+      my (@chans, @keys);
+
+      if (my ($chans, $keys) = ($chans =~ /^(\S+)(?:\s+(\S+))?$/))
 	{
+	  @chans = split(/,/, $chans);
+	  @keys  = split(/,/, $keys);
+	}
+
+      foreach my $chan (@chans)
+	{
+	  my $key = shift(@keys);
+
 	  if (is_channel($chan))
 	    {
 	      VIM::DoCommand('call s:OpenBuf_Channel("'.do_escape($chan).'")');
 
 	      unless (find_channel($chan))  # not joined yet
 		{
-		  irc_send("JOIN %s", $chan);
+		  irc_send("JOIN %s%s", $chan, ($key ? " $key" : ""));
 		  irc_add_line($chan, "*: Now talking in %s", $chan);
 		  unless ($curbuf->Get(1))
 		    {
@@ -2078,7 +2137,8 @@ function! s:Send_QUIT(comd, args)
   let mesg = strlen(a:args) ? a:args : s:partmsg
   let bufnum = s:GetBufNum_Server()
   if bufnum >= 0
-    " Mark this buffer as dead so that the next /SERVER invocation can close it
+    " Mark this buffer as dead so that the next /SERVER invocation can close
+    " it
     call setbufvar(bufnum, 'dead', 1)
   endif
 
@@ -2090,8 +2150,8 @@ function! s:Send_QUIT(comd, args)
     {
       VIM::DoCommand('call s:CloseChannel("'.do_escape($cref->{'cname'}).'")')
     }
-  $Current_Server->{'chans'} = [];
 
+  $Current_Server->{'conn'} |= $CS_QUIT;
   # $mesg itself already contains a leading colon
   irc_send("QUIT %s", $mesg);
 }
@@ -2203,7 +2263,7 @@ function! s:QuitServers()
 {
   foreach my $server (@Servers)
     {
-      if ($server->{'conn'})
+      if ($server->{'conn'} & $CS_LOGIN)
 	{
 	  $Current_Server = $server;
 	  irc_send("QUIT");
@@ -2272,9 +2332,6 @@ function! s:Server(server)
   my $server= VIM::Eval('l:server');
 
   my $nick  = VIM::Eval('s:GetCurrentNick()');
-  my $user  = VIM::Eval('s:user');
-  my $realname= VIM::Eval('s:realname');
-  my $umode = VIM::Eval('s:umode');
 
   if ($port <= 0)
     {
@@ -2284,11 +2341,13 @@ function! s:Server(server)
   $Current_Server = find_server($server);
   if ($Current_Server)
     {
-      if ($Current_Server->{'conn'} && $Current_Server->{'port'} == $port)
+      if (($Current_Server->{'conn'} & $CS_LOGIN)
+	  && $Current_Server->{'port'} == $port)
 	{
 	  return;
 	}
-      conn_close($Current_Server);
+
+      close_server($Current_Server);
     }
   else
     {
@@ -2298,18 +2357,7 @@ function! s:Server(server)
     }
   $Current_Server->{'port'} = $port;
 
-  if (conn_open($Current_Server))
-    {
-      conn_watchin($Current_Server);
-      #$Current_Server->{'local'} = $Current_Server->{'sock'}->sockhost();
-
-      irc_send("NICK %s", $nick);
-      irc_send("USER %s %s * :%s", $user, $umode, $realname);
-    }
-  else
-    {
-      irc_add_line('', "!: Could not establish connection: %s", $!);
-    }
+  open_server($Current_Server);
 }
 EOP
 endfunction
@@ -2389,7 +2437,10 @@ our $From_Server;	# simple string value of the last sender's name@host
 #our %OPTS;
 our ($ENC_VIM, $ENC_IRC);
 
-# Server entries will not be removed.
+# Connection state flags
+our $CS_LOGIN = 0x01;	# successfully logged in
+our $CS_RECON = 0x02;	# trying to reconnect (after disconnected by server)
+our $CS_QUIT  = 0x04;	# user "/QUIT"ted
 
 sub add_server
 {
@@ -2400,7 +2451,7 @@ sub add_server
 		  conn	  => 0,
 		  nick	  => undef,
 		  umode	  => undef,
-		  away	  => 0,
+		  away	  => undef,
 		  motd	  => 0,
 		  chans	  => [],
 		  lastbuf => undef };
@@ -2423,150 +2474,96 @@ sub find_server
   return undef;
 }
 
-sub set_curserver
-{
-  my $fd = shift;
-
-  foreach my $server (@Servers)
-    {
-      if ($fd == fileno($server->{'sock'}))
-	{
-	  $Current_Server = $server;
-	  VIM::DoCommand("let s:server = \"$server->{'server'}\"");
-	  last;
-	}
-    }
-}
-
-sub irc_add_line
-{
-  my $chan = shift;
-  my $fmt  = shift;
-  my $cname;
-  # Remember the current window
-  my $wnum = VIM::Eval('winnr()');
-
-  # Data for hidden channels might be discarded, which is not desirable
-  unless (is_channel($chan)
-	  && VIM::Eval('s:VisitChannel("'.do_escape($chan).'")'))
-    {
-      unless (VIM::Eval('s:VisitServer()'))
-	{
-	  return;
-	}
-      if (is_channel($chan))
-	{
-	  $cname = "($chan)";
-	}
-    }
-
-  VIM::DoCommand('call s:PreBufModify()');
-  # I think Vim's strftime is much faster than perl's equivalent
-  $curbuf->Append($curbuf->Count(), sprintf("%s %s$fmt",
-					    scalar(VIM::Eval('s:GetTime(1)')),
-					    $cname,
-					    @_));
-  unless ($Current_Server->{'away'})
-    {
-      # Shouldn't scroll down nor beep while you're away
-      VIM::DoCommand('call s:NotifyNewEntry()');
-    }
-  VIM::DoCommand('call s:PostBufModify()');
-  VIM::DoCommand("${wnum}wincmd w");
-  VIM::DoCommand('redraw');
-}
-
-sub irc_chat_line
-{
-  my $nick = do_escape(shift);
-  my $fmt  = shift;
-  my $bnum = VIM::Eval("bufnr('%')");
-
-  VIM::DoCommand("call s:OpenBuf_Chat(\"$nick\",
-	\				    \"$Current_Server->{'server'}\")");
-  VIM::DoCommand('call s:PreBufModify()');
-
-  $curbuf->Append($curbuf->Count(), sprintf("%s $fmt",
-					    scalar(VIM::Eval('s:GetTime(1)')),
-					    @_));
-  unless ($Current_Server->{'away'})
-    {
-      # Shouldn't scroll down nor beep while you're away
-      VIM::DoCommand('call s:NotifyNewEntry()');
-    }
-  VIM::DoCommand('call s:PostBufModify()');
-  VIM::DoCommand("call s:SelectWindow($bnum)");
-  VIM::DoCommand('redraw');
-}
-
-sub irc_recv
-{
-  my $sock = shift;
-  my ($buffer, @lines);
-
-  set_curserver(fileno($sock));
-
-  unless (sysread($sock, $buffer, 2048))
-    {
-      set_connected(0);
-      return 0;
-    }
-
-  if ($Current_Server->{'lastbuf'})
-    {
-      $buffer = $Current_Server->{'lastbuf'}.$buffer;
-      $Current_Server->{'lastbuf'} = undef;
-    }
-
-  @lines = split(/\x0D?\x0A/, $buffer);
-  if (substr($buffer, -1) ne "\x0A")
-    {
-      # Data obtained partially. Save the last line for later use
-      $Current_Server->{'lastbuf'} = pop(@lines);
-    }
-
-  foreach my $line (@lines)
-    {
-      if ($ENC_VIM && $ENC_IRC)
-	{
-	  Encode::from_to($line, $ENC_IRC, $ENC_VIM);
-	}
-      if (0)
-	{
-	  vim_printf($line);
-	}
-      parse_line(\$line);
-    }
-
-  return 1;
-}
-
-sub irc_send
-{
-  my $fmt = shift;
-  my @args= @_;
-
-  if ($ENC_VIM && $ENC_IRC)
-    {
-      foreach my $arg (@args)
-	{
-	  Encode::from_to($arg, $ENC_VIM, $ENC_IRC);
-	}
-    }
-  syswrite($Current_Server->{'sock'}, sprintf("$fmt\x0D\x0A", @args));
-}
-
 sub set_connected
 {
-  my $conn = shift;
-
-  $Current_Server->{'conn'} = $conn;
-  unless ($conn)
+  if (shift)
     {
-      $Current_Server->{'motd'} = 0;
-      $Current_Server->{'lastbuf'} = undef;
-      $Current_Server->{'umode'} = undef;
-      conn_close($Current_Server);
+      # Leave the CS_RECON flag here.  It'll be used to supress motd message
+      $Current_Server->{'conn'} &= ~$CS_QUIT;
+      $Current_Server->{'conn'} |= $CS_LOGIN;
+    }
+  else
+    {
+      close_server($Current_Server);
+    }
+}
+
+sub close_server
+{
+  my $server = shift;
+
+  $server->{'conn'}  &= ~$CS_LOGIN;
+  $server->{'motd'}   = 0;
+  $server->{'umode'}  = undef;
+  $server->{'lastbuf'}= undef;
+  conn_close($server);
+}
+
+sub open_server
+{
+  my $server = shift;
+
+  if (conn_open($server))
+    {
+      conn_watchin($server);  # add it to IO::Select
+      #$server->{'local'} = $server->{'sock'}->sockhost();
+      login_server($server);
+      return 1;
+    }
+  else
+    {
+      irc_add_line('', "!: Could not establish connection: %s", $!);
+      return 0;
+    }
+}
+
+sub login_server
+{
+  my $server = shift;
+
+  if ($Current_Server != $server)
+    {
+      $Current_Server = $server;
+    }
+
+  irc_send("NICK %s", $server->{'nick'});
+  irc_send("USER %s %s * :%s",
+	    vim_getvar('s:user'),
+	    vim_getvar('s:umode'),
+	    vim_getvar('s:realname'));
+}
+
+sub post_login_server
+{
+  my $server = shift;
+
+  $server->{'motd'} = 1;
+  $server->{'conn'} &= ~$CS_RECON;  # clear the "reconnecting" flag
+
+  irc_send("USERHOST %s", $server->{'nick'});
+
+  if (my $umode = vim_getvar('s:umode'))
+    {
+      irc_send("MODE %s %s", $server->{'nick'}, $umode);
+    }
+
+  if ($server->{'away'})
+    {
+      irc_send("AWAY :%s", $server->{'away'});
+    }
+
+  # Re-join channels
+  if (@{$server->{'chans'}})
+    {
+      foreach my $cref (@{$server->{'chans'}})
+	{
+	  irc_send("JOIN %s%s", $cref->{'cname'}, ($cref->{'key'}
+						    ? " $cref->{'key'}" : ""));
+	}
+    }
+  elsif (vim_getvar('g:vimirc_autojoin'))
+    {
+      VIM::DoCommand("call s:Send_JOIN('JOIN', g:vimirc_autojoin)");
     }
 }
 
@@ -2634,9 +2631,156 @@ sub conn_watchout
     }
 }
 
+sub set_curserver
+{
+  my $fd = shift;
+
+  foreach my $server (@Servers)
+    {
+      if ($fd == fileno($server->{'sock'}))
+	{
+	  $Current_Server = $server;
+	  VIM::DoCommand("let s:server = \"$server->{'server'}\"");
+	  last;
+	}
+    }
+}
+
+sub irc_add_line
+{
+  my $chan = shift;
+  my $fmt  = shift;
+  my $cname;
+  # Remember the current window
+  my $wnum = VIM::Eval('winnr()');
+
+  # Data for hidden channels might be discarded, which is not desirable
+  unless (is_channel($chan)
+	  && VIM::Eval('s:VisitChannel("'.do_escape($chan).'")'))
+    {
+      unless (VIM::Eval('s:VisitServer()'))
+	{
+	  VIM::Msg(sprintf($fmt, @_));
+	  return;
+	}
+      if (is_channel($chan))
+	{
+	  $cname = "($chan)";
+	}
+    }
+
+  VIM::DoCommand('call s:PreBufModify()');
+  # I think Vim's strftime is much faster than perl's equivalent
+  $curbuf->Append($curbuf->Count(), sprintf("%s %s$fmt",
+					    scalar(VIM::Eval('s:GetTime(1)')),
+					    $cname,
+					    @_));
+  unless ($Current_Server->{'away'})
+    {
+      # Shouldn't scroll down nor beep while you're away
+      VIM::DoCommand('call s:NotifyNewEntry()');
+    }
+  VIM::DoCommand('call s:PostBufModify()');
+  VIM::DoCommand("${wnum}wincmd w");
+  VIM::DoCommand('redraw');
+}
+
+sub irc_chat_line
+{
+  my $nick = do_escape(shift);
+  my $fmt  = shift;
+  my $bnum = VIM::Eval("bufnr('%')");
+
+  VIM::DoCommand("call s:OpenBuf_Chat(\"$nick\",
+	\				    \"$Current_Server->{'server'}\")");
+  VIM::DoCommand('call s:PreBufModify()');
+
+  $curbuf->Append($curbuf->Count(), sprintf("%s $fmt",
+					    scalar(VIM::Eval('s:GetTime(1)')),
+					    @_));
+  unless ($Current_Server->{'away'})
+    {
+      # Shouldn't scroll down nor beep while you're away
+      VIM::DoCommand('call s:NotifyNewEntry()');
+    }
+  VIM::DoCommand('call s:PostBufModify()');
+  VIM::DoCommand("call s:SelectWindow($bnum)");
+  VIM::DoCommand('redraw');
+}
+
+sub irc_recv
+{
+  my $sock = shift;
+  my ($buffer, @lines);
+
+  set_curserver(fileno($sock));
+
+  unless (sysread($sock, $buffer, 2048))
+    {
+      set_connected(0);
+
+      unless ($Current_Server->{'conn'} & $CS_QUIT)
+	{
+	  $Current_Server->{'conn'} |= $CS_RECON;
+	  irc_add_line('', "!: Connection with %s lost",
+						  $Current_Server->{'server'});
+	  irc_add_line('', "*: Reconnecting...");
+
+	  if (open_server($Current_Server))
+	    {
+	      return 1;
+	    }
+	}
+      return 0;
+    }
+
+  if ($Current_Server->{'lastbuf'})
+    {
+      $buffer = $Current_Server->{'lastbuf'}.$buffer;
+      $Current_Server->{'lastbuf'} = undef;
+    }
+
+  @lines = split(/\x0D?\x0A/, $buffer);
+  if (substr($buffer, -1) ne "\x0A")
+    {
+      # Data obtained partially. Save the last line for later use
+      $Current_Server->{'lastbuf'} = pop(@lines);
+    }
+
+  foreach my $line (@lines)
+    {
+      if ($ENC_VIM && $ENC_IRC)
+	{
+	  Encode::from_to($line, $ENC_IRC, $ENC_VIM);
+	}
+      if (0)
+	{
+	  vim_printf($line);
+	}
+      parse_line(\$line);
+    }
+
+  return 1;
+}
+
+sub irc_send
+{
+  my $fmt = shift;
+  my @args = @_;
+
+  if ($ENC_VIM && $ENC_IRC)
+    {
+      foreach my $arg (@args)
+	{
+	  Encode::from_to($arg, $ENC_VIM, $ENC_IRC);
+	}
+    }
+  syswrite($Current_Server->{'sock'}, sprintf("$fmt\x0D\x0A", @args));
+}
+
 sub is_channel
 {
-  # TODO: This might not be enough
+  # This might not be enough
   return (shift =~ /^[&#+!]/);
 }
 
@@ -3645,14 +3789,15 @@ sub set_cmode
 sub add_channel
 {
   my $chan = shift;
-  # We should not change the case when adding channels.  It may cause troubles
-  # with non-ascii characters
+  # We should not change cases here.  It may cause troubles with non-ascii
+  # characters
 
   unless (find_channel($chan))
     {
       my $cref = {  cname => $chan,
 		    umode => 0,
 		    cmode => 0,
+		    key	  => undef,
 		    nicks => [],
 		    split => {}   };
       unshift(@{$Current_Server->{'chans'}}, $cref);
@@ -3735,7 +3880,7 @@ sub refresh_nicks
 	    {
 	      my $nref = $nicks->[$i];
 
-	      if ($i > 0)
+	      if ($i)
 		{
 		  splice(@{$nicks}, $i, 1);
 		  unshift(@{$nicks}, $nref);
@@ -3750,7 +3895,7 @@ sub refresh_nicks
 
 sub add_nick
 {
-  my ($nick, $mode, $chan) = @_;
+  my ($nick, $mode, $chan, $force) = @_;
 
   if (my $cref = find_channel($chan))
     {
@@ -3758,8 +3903,11 @@ sub add_nick
 	{
 	  $cref->{'umode'} = $mode;
 	}
-      # Just add it
-      unshift(@{$cref->{'nicks'}}, { nick => $nick, umode => $mode });
+
+      if ($force || !find_nick($nick, $chan))
+	{
+	  unshift(@{$cref->{'nicks'}}, { nick => $nick, umode => $mode });
+	}
     }
 }
 
@@ -4097,7 +4245,6 @@ sub parse_number
     }
   elsif ($comd == 305 || $comd == 306)	# RPL_UNAWAY/RPL_NOWAWAY
     {
-      $Current_Server->{'away'} = ($comd == 306);
       irc_add_line('', $mesg);
     }
   elsif ($comd == 311 || $comd == 314)	# RPL_WHOISUSER
@@ -4258,7 +4405,7 @@ sub parse_number
 		{
 		  $mode |= $UMODE_VOICE;
 		}
-	      add_nick($nick, $mode, $chan);
+	      add_nick($nick, $mode, $chan, 1);
 	    }
 	}
       else
@@ -4281,27 +4428,22 @@ sub parse_number
 	  irc_add_line('', "*: End of names");
 	}
     }
-  elsif ($comd == 372)	# RPL_MOTD
+  elsif ($comd == 372 || $comd == 375)	# RPL_MOTD/RPL_MOTDSTART
     {
-      irc_add_line('', $mesg);
-    }
-  elsif ($comd == 375)	# RPL_MOTDSTART
-    {
-      irc_add_line('', $mesg);
+      unless ($Current_Server->{'conn'} & $CS_RECON)
+	{
+	  irc_add_line('', $mesg);
+	}
     }
   elsif ($comd == 376)	# RPL_ENDOFMOTD
     {
-      irc_add_line('', $mesg);
+      unless ($Current_Server->{'conn'} & $CS_RECON)
+	{
+	  irc_add_line('', $mesg);
+	}
       unless ($Current_Server->{'motd'})
 	{
-	  $Current_Server->{'motd'} = 1;
-	  irc_send("USERHOST %s", $Current_Server->{'nick'});
-	  irc_send("MODE %s %s", $Current_Server->{'nick'},
-						scalar(VIM::Eval('s:umode')));
-	  if (vim_getvar('g:vimirc_autojoin'))
-	    {
-	      VIM::DoCommand("call s:Send_JOIN('JOIN', g:vimirc_autojoin)");
-	    }
+	  post_login_server($Current_Server);
 	}
     }
   elsif ($comd == 391)	# RPL_TIME
@@ -4311,7 +4453,7 @@ sub parse_number
   elsif ($comd >= 431 && $comd <= 433)	# ERR_NICKNAMEINUSE etc.
     {
       irc_add_line('', $mesg);
-      unless ($Current_Server->{'conn'})
+      unless ($Current_Server->{'conn'} & $CS_LOGIN)
 	{
 	  VIM::DoCommand("call s:Send_NICK('NICK', '')");
 	}
