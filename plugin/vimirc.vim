@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 Feb 2004
-" Last Change: Fri, 11 Mar 2005 17:09:39 +0900 (JST)
+" Last Change: Tue, 15 Mar 2005 13:06:45 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -295,7 +295,7 @@
 if exists('g:loaded_vimirc') || &compatible
   finish
 endif
-let s:version = '0.9.11'
+let s:version = '0.9.12'
 
 let s:debug = (s:version =~# '-devel$')
 if !s:debug
@@ -651,7 +651,7 @@ function! s:QuitVimIRC()
     endif
   finally
     call s:RedrawScreen(1)
-    call s:PromptKey(' Thanks for flying VimIRC', 'Title')
+    call s:PromptKey(0, ' Thanks for flying VimIRC', 'Title')
     call s:ResetSysVars()
   endtry
 endfunction
@@ -768,10 +768,8 @@ endfunction
 
 function! s:RC_Section(section)
   if !search('^" '.a:section, 'w')
-    if strlen(getline('$'))
-      call append('$', '')
-    endif
-    call append('$', '" '.a:section)
+    call s:OpenNewLine()
+    call append('.', '" '.a:section)
     $
   endif
 endfunction
@@ -1984,10 +1982,10 @@ function! s:HandleMultiKey(char, multi)
 
   while 1
     call s:ShowCmd(comd)
-    let key  = s:GetKey()
+    let key  = s:GetKey(0)
     let char = s:Key2Char(key)
     " User can cancel input with <C-C>, without thrown out of the main loop
-    let comd = strlen(char) ? comd.char : ''
+    let comd = !(char =~# '^[[:escape:]]\=$') ? comd.char : ''
     " Continue if it is a number
     if !(a:multi && (key >= 48 && key <= 57))
       break
@@ -2005,7 +2003,7 @@ endfunction
 
 " Make use of the key input for the 'Hit any key to continue' prompt
 function! s:HandlePromptKey(mesg, ...)
-  let key = s:PromptKey(a:mesg, (a:0 ? a:1 : 'Question'))
+  let key = s:PromptKey(10, a:mesg, (a:0 ? a:1 : 'Question'))
   " Do nothing with space, <C-C> etc.
   if s:Key2Char(key) =~# '^[ [:return:][:escape:]]\=$'
     call s:HiliteBuffer()
@@ -2038,7 +2036,7 @@ function! s:SendLines() range
 	" Get the destination buffer
 	let destbuf = s:SendLine(s:ExpandAlias(s:StrTrim(getline(i))))
       catch /^SYNTAX ERROR/
-	call s:PromptKey(v:exception, 'Error')
+	call s:EchoError(v:exception)
       finally
 	let i = i + 1
       endtry
@@ -2186,12 +2184,14 @@ endfunction
 
 function! s:OptList(opts)
   let opts = a:opts
+
   call s:EchoHL('Current setting'.(opts =~ ' ' ? 's' : '').':', 'Title')
   while strlen(opts)
     let opt = s:StrDivide(opts, 1)
     echo opt.':' s:GetVimVar('s:'.opt)
     let opts = s:StrDivide(opts, 0)
   endwhile
+
   call s:PromptEnter()
 endfunction
 
@@ -2338,7 +2338,7 @@ function! s:Cmd_ALIAS(line)
     endif
     call s:RC_Close()
   else
-    call s:PromptKey('Syntax: /ALIAS alias command (with arguments)', 'Error')
+    call s:EchoError('Syntax: /ALIAS alias command (with arguments)')
   endif
 endfunction
 
@@ -2486,11 +2486,11 @@ endfunction
 "
 
 function! s:Cmd_HELP(...)
-  if a:0
+  if a:0 && strlen(a:1)
     if a:1 ==? 'DCC'
       call s:Cmd_DCCHELP()
     elseif a:1 =~? '^\%(SERVER\|REMOTE\)\>'
-      call s:Cmd_REMOTEHELP(substitute(a:1, '^\S\+\s*', '', ''))
+      call s:Cmd_REMOTEHELP(s:StrDivide(a:1, 0))
     endif
     return
   endif
@@ -2666,8 +2666,7 @@ function! s:UpdateList()
       call s:SetCurServer(b:server)
       call s:DoSend('LIST', '')
     else
-      call s:PromptKey('You are too eager to update.  Wait another minute.',
-	    \							'WarningMsg')
+      call s:EchoWarn('You are too eager to update.  Wait another minute.')
     endif
     call s:MainLoop()
   endif
@@ -2920,8 +2919,8 @@ function! s:Beep(times)
   endtry
 endfunction
 
-function! s:ClearCommand()
-  echon "\r"
+function! s:ClearCommand(newline)
+  echon "\r" (a:newline ? "\n" : '')
 endfunction
 
 function! s:EchoHL(mesg, hlname)
@@ -2936,10 +2935,9 @@ endfunction
 
 function! s:EchoError(mesg)
   call s:Beep(1)
-  call s:PromptKey(a:mesg, 'ErrorMsg')
+  call s:HandlePromptKey(a:mesg, 'ErrorMsg')
 endfunction
 
-" Unlike EchoError, this accepts command input.
 function! s:EchoWarn(mesg)
   call s:HandlePromptKey(a:mesg, 'WarningMsg')
 endfunction
@@ -2958,13 +2956,13 @@ endfunction
 
 function! s:ExecuteLoud(comd)
   let loud = 0
+  call s:UntoggleCursor(1)
   try
     let save_more = &more
     let save_reg = @"
 
     let @" = @_
     set more
-    call s:UntoggleCursor(1)
 
     redir @"
     execute a:comd
@@ -2980,7 +2978,7 @@ function! s:ExecuteLoud(comd)
 endfunction
 
 function! s:ExecuteSafe(prefix, comd)
-  execute (exists(':'.a:prefix) == 2 ? a:prefix : '') a:comd
+  execute (exists(':'.a:prefix) == 2 ? a:prefix.' ' : '').a:comd
 endfunction
 
 function! s:ExecuteShell(comd)
@@ -3000,15 +2998,14 @@ endfunction
 function! s:DoNormal(comd, ...)
   let silent = (a:0 && a:1)
   if !strlen(a:comd)
-    " Vim beeps when you type z<C-C>
-    return s:Beep(!silent)
+    return
   endif
 
   try
     let modifiable = &l:modifiable
     " Temporarily forbid user to tamper with the buffer.
     setlocal nomodifiable
-    execute (silent ? 'silent!' : '') 'normal!' a:comd
+    execute (silent ? 'silent! ' : '').'normal! '.a:comd
   finally
     let &l:modifiable = modifiable
   endtry
@@ -3050,10 +3047,17 @@ function! s:RedrawStatus(...)
 endfunction
 
 " Show user that she is in pending-mode
+if 1
+function! s:ShowCmd(comd)
+  echon s:StrMultiply(' ', (&columns - 20))
+	\ strpart(a:comd, (strlen(a:comd) > 8 ? strlen(a:comd) - 8 : 0)) "\r"
+endfunction
+else
 function! s:ShowCmd(comd)
   " TODO: Right-align the message
   echon "\t" a:comd "\r"
 endfunction
+endif
 
 function! s:Write(file, append)
   " TODO: Range support
@@ -3072,21 +3076,20 @@ endfunction
 " Interactive functions
 
 function! s:Confirm(mesg, list)
+  let choice = 0
   call s:UntoggleCursor(1)
-
   try
     let choice = confirm(a:mesg, a:list)
   catch /^Vim:Interrupt$/
-    let choice = 0
+  finally
+    call s:RedrawScreen(0)
+    call s:UntoggleCursor(0)
   endtry
-
-  call s:RedrawScreen(0)
-  call s:UntoggleCursor(0)
   return choice
 endfunction
 
 function! s:Confirm_YN(mesg)
-  return (s:PromptChar(' '.a:mesg.'? (y/[n]): ', 'Question') ==? 'y')
+  return (s:PromptChar(20, ' '.a:mesg.'? (y/[n]):', 'Question') ==? 'y')
 endfunction
 
 function! s:Input(mesg, ...)
@@ -3098,15 +3101,14 @@ function! s:InputS(mesg)
 endfunction
 
 function! s:DoInput(secret, mesg, text)
+  let input = ''
   call s:UntoggleCursor(1)
-
   try
     let input = s:StrCompress(input{a:secret ? 'secret' : ''}(a:mesg, a:text))
   catch /^Vim:Interrupt$/
-    let input = ''
+  finally
+    call s:UntoggleCursor(0)
   endtry
-
-  call s:UntoggleCursor(0)
   return input
 endfunction
 
@@ -3116,54 +3118,95 @@ function! s:Key2Char(key)
 endfunction
 
 if 0
-  function! s:GetChar()
-    return s:Key2Char(s:GetKey())
+  function! s:GetChar(cursor)
+    return s:Key2Char(s:GetKey(a:cursor))
   endfunction
 endif
 
-function! s:GetKey()
+function! s:GetKey(cursor)
+  let key = 0
+  if a:cursor
+    call s:UntoggleCursor(1)
+  endif
   try
     let key = getchar()
   catch /^Vim:Interrupt$/
-    let key = 0
+  finally
+    call s:ClearCommand(0)
+    if a:cursor
+      call s:UntoggleCursor(0)
+    endif
   endtry
-
-  call s:ClearCommand()
   return key
 endfunction
 
-function! s:PromptChar(mesg, ...)
-  return s:Key2Char(s:PromptKey(a:mesg, (a:0 ? a:1 : 'MoreMsg')))
+function! s:PromptChar(timeout, mesg, ...)
+  return s:Key2Char(s:PromptKey(a:timeout, a:mesg, (a:0 ? a:1 : 'MoreMsg')))
 endfunction
 
 function! s:PromptEnter()
+  call s:ClearCommand(1)
   call s:HandlePromptKey('Hit ENTER or type command to continue')
 endfunction
 
-function! s:PromptKey(mesg, ...)
-  " TODO: Add timeout feature
-  call s:UntoggleCursor(1)
-  call s:EchoHL(a:mesg, (a:0 ? a:1 : 'MoreMsg'))
+function! s:PromptKey(timeout, mesg, ...)
+  " TODO: Make timeout-length configurable
+  let key = 0
+  let hlname = a:0 ? a:1 : 'MoreMsg'
 
-  let key = s:GetKey()
+  if a:timeout > 0
+    let key = s:PromptKeyTick(a:timeout, a:mesg, hlname)
+  else
+    call s:EchoHL(a:mesg, hlname)
+    let key = s:GetKey(1)
+  endif
 
-  call s:UntoggleCursor(0)
-  call s:ClearCommand()
+  call s:ClearCommand(0)
   return key
 endfunction
 
-function! s:RequestFile(mesg)
-  call s:UntoggleCursor(1)
-
+" PromptKey with timeout feature
+function! s:PromptKeyTick(timeout, mesg, hlname)
+  let key = 0
+  call s:ClearCommand(0)
   try
-    let file = has('browse') ? browse(0, 'Select file '.a:mesg, './', '')
-	  \		     : input('Enter filename '.a:mesg.': ')
+    let startT = localtime()
+    while (a:timeout - (s:DoTick(a:mesg, '\|/-', a:hlname) - startT)) > 0
+      if getchar(1)
+	let key = getchar(0)
+	break
+      endif
+      sleep 200 m
+    endwhile
   catch /^Vim:Interrupt$/
-    let file = ''
   endtry
+  return key
+endfunction
 
-  call s:UntoggleCursor(0)
-  return file
+function! s:DoTick(mesg, ticker, ...)
+  let nowT = localtime()
+  try
+    execute 'echohl' (a:0 ? a:1 : 'Normal')
+    echon a:mesg ' '
+    execute 'echohl' s:hl_cursor
+    echon a:ticker[nowT % strlen(a:ticker)] "\r"
+  finally
+    echohl None
+  endtry
+  return nowT
+endfunction
+
+function! s:RequestFile(mesg)
+  let fname = ''
+  call s:UntoggleCursor(1)
+  try
+    let fname = has('browse') ? browse(0, 'Select file '.a:mesg, './', '')
+	  \		      : input('Enter filename '.a:mesg.': ')
+  catch /^Vim:Interrupt$/
+  finally
+    call s:UntoggleCursor(0)
+  endtry
+  return fname
 endfunction
 
 function! s:SearchWord(comd)
@@ -3217,14 +3260,20 @@ function! s:StrSquash(str, ...)
   return substitute(a:str, patrn.'\+', '', 'g')
 endfunction
 
-function! s:StrMultiply(str, times)
-  let str = a:str
-  let i = 1
-  while i < a:times
-    let str = str.a:str
-    let i = i + 1
+function! s:StrMultiply(from, cnt)
+  " Super cool logic entirely copied from Chalice
+  let to = ''
+  let from = a:from
+  let cnt = a:cnt
+  while cnt
+    if cnt % 2
+      " This is binary addition in actuality, performed with strings
+      let to = to.from
+    endif
+    let cnt = cnt / 2
+    let from = from.from
   endwhile
-  return str
+  return to
 endfunction
 
 " Divide string at space or comma
@@ -3296,7 +3345,6 @@ function! s:OpenNewLine()
   if strlen(getline('$'))
     call append('$', '')
   endif
-
   call s:ScreenBottom()
 endfunction
 
@@ -3398,7 +3446,7 @@ function! s:ScreenScroll(cnt)
     let curline = line('.')
     let upw = (a:cnt < 0)
     let cnt = a:cnt * (a:cnt > 0 ? 1 : -1)
-    call s:DoNormal(cnt.nr2char(5 * (upw ? 5 : 1)))
+    call s:DoNormal(cnt.nr2char(5 * (upw ? 5 : 1)))	" count <C-Y>/<C-E>
     if line('.') != curline
       execute curline
     endif
@@ -3412,11 +3460,15 @@ function! s:GetHilite(name, mode)
   return synIDattr(synIDtrans(hlID(a:name)), a:mode)
 endfunction
 
-function! s:SetHilite(name, fg, bg)
-  let mode = has('gui') ? 'gui' : 'cterm'
-  let fg = strlen(a:fg) ? a:fg : 'NONE'
-  let bg = strlen(a:bg) ? a:bg : 'NONE'
-  execute 'highlight '.a:name.' '.mode.'fg='.fg.' '.mode.'bg='.bg
+function! s:SetHilite(name, fg, bg, ...)
+  " TODO: Deal with bold, underline, etc.
+  let mode= has('gui') ? 'gui' : 'cterm'
+  let fg  = strlen(a:fg) ? a:fg : 'NONE'
+  let bg  = strlen(a:bg) ? a:bg : 'NONE'
+  let etc = (a:0 && strlen(a:1)) ? a:1 : 'NONE'
+
+  call s:ExecuteSilent('highlight '.a:name.' '.mode.'='.etc.
+			\' '.mode.'fg='.fg.' '.mode.'bg='.bg)
 endfunction
 
 if 0
@@ -3433,25 +3485,34 @@ if 0
 endif
 
 function! s:SetHlCursor()
+  " TODO: Deal with colorscheme changes
   let s:hl_cursor = 'VimIRCCursor'
 
-  let s:fgcolor_cursor = s:GetHilite('Cursor', 'fg')
-  let s:bgcolor_cursor = s:GetHilite('Cursor', 'bg')
-  if !(strlen(s:fgcolor_cursor) || strlen(s:bgcolor_cursor))
-    let s:fgcolor_cursor = s:GetHilite('Visual', 'fg')
-    let s:bgcolor_cursor = s:GetHilite('Visual', 'bg')
+  let s:cursor_fg = s:GetHilite('Cursor', 'fg')
+  let s:cursor_bg = s:GetHilite('Cursor', 'bg')
+
+  let etc = (s:GetHilite('Cursor', 'bold') ? 'bold' : '').
+	   \(s:GetHilite('Cursor', 'italic') ? ',italic' : '').
+	   \(s:GetHilite('Cursor', 'reverse') ? ',reverse' : '').
+	   \(s:GetHilite('Cursor', 'underline') ? ',underline' : '')
+  let s:cursor_etc = s:StrCompress(etc, ',')
+
+  if !(strlen(s:cursor_fg) || strlen(s:cursor_bg))
+    let s:cursor_fg = s:GetHilite('Visual', 'fg')
+    let s:cursor_bg = s:GetHilite('Visual', 'bg')
   endif
-  call s:SetHilite(s:hl_cursor, s:fgcolor_cursor, s:bgcolor_cursor)
+  call s:SetHilite(s:hl_cursor, s:cursor_fg, s:cursor_bg, s:cursor_etc)
 endfunction
 
 function! s:ToggleCursor(hide)
-  if has('gui')
-    call s:SetHilite('Cursor', (a:hide ? '' : s:fgcolor_cursor),
-	  \		       (a:hide ? '' : s:bgcolor_cursor))
+  if hlexists('Cursor')
+    call s:SetHilite('Cursor', (a:hide ? '' : s:cursor_fg),
+	  \		       (a:hide ? '' : s:cursor_bg),
+	  \		       (a:hide ? '' : s:cursor_etc))
   endif
 endfunction
 
-" Temporarily restores cursor for prompt
+" Temporarily restores cursor for prompting
 function! s:UntoggleCursor(show)
   if s:inside_loop
     call s:ToggleCursor(!a:show)
@@ -3459,10 +3520,10 @@ function! s:UntoggleCursor(show)
 endfunction
 
 function! s:HiliteBuffer()
-  call s:HiliteColumn(0, (s:IsBufInfo() ? 'DiffText' : s:hl_cursor))
+  call s:HiliteColumn(s:IsBufInfo() ? 'DiffText' : s:hl_cursor)
 endfunction
 
-function! s:HiliteColumn(bogus, ...)
+function! s:HiliteColumn(...)
   " Function calls should be as few as possible for better performance
   execute 'match '.(a:0 ? a:1 : s:hl_cursor).' /\%#\s*\S*/'
   redraw
@@ -3487,7 +3548,7 @@ endfunction
 function! s:HiliteClear()
   match none
   " Clear command line incidentally
-  call s:ClearCommand()
+  call s:ClearCommand(0)
 endfunction
 
 "
@@ -3895,7 +3956,7 @@ function! s:Cmd_SERVER(server)
 
   call s:OpenBuf_Server(port)
   call s:CloseWin_DeadServer()
-  $
+  call s:ScreenBottom()
 
   perl <<EOP
 {
@@ -4200,11 +4261,7 @@ function! s:Send_NICK(comd, args)
     endif
   endif
 
-  if nick =~ '[[:blank:][:cntrl:]]'
-    call s:EchoError('Invalid nickname: '.nick)
-  else
-    call s:DoSend(a:comd, nick)
-  endif
+  call s:DoSend(a:comd, nick)
 endfunction
 
 function! s:Send_PART(comd, args)
