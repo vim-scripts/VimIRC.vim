@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 Feb 2004
-" Last Change: Thu, 31 Mar 2005 23:24:06 +0900 (JST)
+" Last Change: Fri, 01 Apr 2005 14:37:49 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -328,7 +328,7 @@
 if exists('g:loaded_vimirc') || &compatible
   finish
 endif
-let s:version = '0.9.19'
+let s:version = '0.9.20'
 
 let s:debug = (s:version =~# '-devel$')
 if !s:debug
@@ -1262,7 +1262,7 @@ function! s:OpenBuf_Channel(channel)
       call s:OpenBuf('edit', bufname)
       call s:InitBuf_Channel(bufname, a:channel)
     endif
-    " XXX: I don't remember why this is necessary
+    " Is this necessary?
     if &l:winfixheight
       let &l:winfixheight = 0
     endif
@@ -1309,7 +1309,7 @@ function! s:OpenBuf_Nicks(channel, ...)
       else
 	let bufname = s:GenBufName_Nicks(a:channel)
 	call s:OpenBuf(comd, bufname)
-	call s:InitBuf_Nicks(bufname, a:channel)
+	call s:InitBuf_Nicks(bufname, a:channel, server)
       endif
     endif
   endif
@@ -1413,6 +1413,9 @@ function! s:PostOpenBuf_Chat()
 endfunction
 
 function! s:SplitBuf_Channel()
+  let autocmd_disable = s:autocmd_disable
+  let s:autocmd_disable = 1
+
   let hasnick = s:IsBufType_ChanChat()
   if hasnick
     call s:CloseBuf_Nicks(b:channel, b:server)
@@ -1431,6 +1434,7 @@ function! s:SplitBuf_Channel()
     call s:DoWincmd('j')
     " New channel will be opened here
   endif
+  let s:autocmd_disable = autocmd_disable
 endfunction
 
 function! s:ModifyBuf(modify, ...)
@@ -1683,13 +1687,13 @@ function! s:InitBuf_Chat(bufname, nick, server)
   call s:DoSyntax_Chat()
 
   let bufnum = s:SetBufNum(a:bufname)
-  if s:OpenBuf_Nicks(a:nick, a:server)
+  if !s:autocmd_disable && s:OpenBuf_Nicks(a:nick, a:server)
     call s:BufVisit(bufnum)
   endif
 endfunction
 
-function! s:InitBuf_Nicks(bufname, channel)
-  let b:server	= s:server
+function! s:InitBuf_Nicks(bufname, channel, server)
+  let b:server	= a:server
   let b:channel = a:channel
   let b:title	= a:channel
 
@@ -2049,7 +2053,7 @@ function! s:HandleKey(key)
   elseif char == ':'
     if s:Execute(s:DoInput(0, ':', ''))
       " Pause after commands which produce outputs
-      return s:PromptEnter(1)
+      return s:PromptEnter(2)
     endif
   elseif char =~# '^[/?]$'
     call s:SearchWord(char)
@@ -2596,20 +2600,22 @@ endfunction
 function! s:ExpandCmd(comd)
   " NOTE: Beware of collisions
   let comd = toupper(a:comd)
-  if comd =~# '^\%(CH\%[AT]\)$'
+  if comd =~# '^\%(B\%[YE]\|E\%[XIT]\|SI\%[GNOFF]\)$'
+    let comd = 'QUIT'
+  elseif comd =~# '^\%(CH\%[AT]\)$'
     let comd = 'QUERY'
-  elseif comd =~# '^\%(MSG\=\)$'
-    let comd = 'PRIVMSG'
-  elseif comd =~# '^\%(ME\)$'
-    let comd = 'ACTION'
-  elseif comd =~# '^\%(\%(RE\)\=CO\%[NNECT]\)$'
-    let comd = 'SERVER'
+  elseif comd =~# '^DA\%[TE]$'
+    let comd = 'TIME'
   elseif comd =~# '^\%(LE\%[AVE]\)$'
     let comd = 'PART'
-  elseif comd =~# '^\%(B\%[YE]\|E\%[XIT]\|SI\%[GNOFF]\)$'
-    let comd = 'QUIT'
+  elseif comd =~# '^\%(ME\)$'
+    let comd = 'ACTION'
+  elseif comd =~# '^\%(M\%[SG]\)$'
+    let comd = 'PRIVMSG'
   elseif comd =~# '^\%(NICKS\)$'
     let comd = 'NAMES'
+  elseif comd =~# '^\%(\%(RE\)\=CO\%[NNECT]\)$'
+    let comd = 'SERVER'
   else
     " Handle abbreviations
     if comd =~# '^AC\%[TIO]$'
@@ -2659,7 +2665,9 @@ function! s:ExpandCmd(comd)
     elseif comd =~# '^S\%[ERVE]$'
       let comd = 'SERVER'
     "elseif comd =~# '^SET$'
-    elseif comd =~# '^T\%[OPI]$'
+    elseif comd =~# '^T\%[IM]$'
+      let comd = 'TIME'
+    elseif comd =~# '^TO\%[PI]$'
       let comd = 'TOPIC'
     elseif comd =~# '^UNA\%[LIA]$'
       let comd = 'UNALIAS'
@@ -2667,6 +2675,12 @@ function! s:ExpandCmd(comd)
       let comd = 'UNSET'
     elseif comd =~# '^V\%[OIC]$'
       let comd = 'VOICE'
+    elseif comd =~# '^WH$'
+      let comd = 'WHO'
+    elseif comd =~# '^WHOAM\=$'
+      let comd = 'WHOAMI'
+    elseif comd =~# '^WHOI$'
+      let comd = 'WHOIS'
     endif
   endif
   return comd
@@ -2687,15 +2701,7 @@ function! s:ExpandArgs(comd, args)
     let server= s:ExpandChannel(s:StrDivide(a:args, 1))
     let nicks = s:ExpandChannel(substitute(s:StrDivide(a:args, 2),
 	  \						    '\s\+', ',', 'g'))
-
-    let args = server
-    if strlen(nicks)
-      if s:IsNick(server)
-	let args = server.','.nicks
-      else
-	let args = server.(strlen(server) ? ' ': '').nicks
-      endif
-    endif
+    let args  = s:StrTrim(server.(s:IsNick(server) ? ',' : ' ').nicks)
   elseif a:comd =~# '^WHOWAS$'
     " Syntax: USER [COUNT [SERVER]]
     " NOTE: Some servers accept multiple users, delimited with commas, whereas
@@ -3158,12 +3164,6 @@ function! s:Cmd_HELP(...)
     call s:EchoHL('/gq[uit] [reason]', hlname)
     echo "\tDisconnect with all the servers."
     echo "\n"
-    call s:EchoHL('/aw[ay] [reason]', hlname)
-    echo "\tWith reason, notify the server that you are away.  Without reason,"
-    echo "\tnotify her that you are back."
-    call s:EchoHL('/ga[way] [reason]', hlname)
-    echo "\tDo the same thing with all servers."
-    echo "\n"
     call s:EchoHL('/l[ist]', hlname)
     echo "\tShow the list of active channels on the server."
     echo "\n"
@@ -3174,31 +3174,47 @@ function! s:Cmd_HELP(...)
     echo "\tfrom the current channel."
     echo "\tSynonym: le[ave]."
     echo "\n"
-    call s:EchoHL('/t[opic] [channel] [topic]', hlname)
+    call s:EchoHL('/to[pic] [channel] [topic]', hlname)
     echo "\tSet or show the current topic for channel."
-    echo "\n"
-    call s:EchoHL('/ms[g] target message', hlname)
-    echo "\tSend a message to the nick/channel."
-    echo "\n"
-    call s:EchoHL('message', hlname)
-    echo "\tSend a message to the current channel, or the nick currently"
-    echo "\tchatting with."
     echo "\n"
     call s:EchoHL('/q[uery] [nick]', hlname)
     echo "\tWith nick, start a query session with the user.  Without nick,"
     echo "\tclose the current query session."
     echo "\tSynonym: ch[at]"
     echo "\n"
-    call s:EchoHL('/ac[tion] target message', hlname)
-    echo "\tSend a message to a nick/channel, playing some role."
+    call s:EchoHL('message', hlname)
+    echo "\tSend a message to the current channel, or the nick currently"
+    echo "\tchatting with."
+    echo "\n"
+    call s:EchoHL('/m[sg] target message', hlname)
+    echo "\tSend a message to the nick/channel."
+    call s:EchoHL('', hlname)
+    echo "\n"
     call s:EchoHL('/me message', hlname)
     echo "\tSend a message to the current channel/query target, playing some"
     echo "\trole."
+    call s:EchoHL('/des[cribe] target message', hlname)
+    echo "\tSend a message to the nick/channel, playing some role."
+    echo "\n"
+    call s:EchoHL('/t[ime]', hlname)
+    echo "\tShow what time it is on the server now."
+    echo "\tSynonym: da[te]"
+    echo "\n"
+    call s:EchoHL('/aw[ay] [reason]', hlname)
+    echo "\tWith reason, notify the server that you are away.  Without reason,"
+    echo "\tnotify her that you are back."
+    call s:EchoHL('/ga[way] [reason]', hlname)
+    echo "\tDo the same thing with all servers."
+    echo "\n"
+    call s:EchoHL('/whoa[mi]', hlname)
+    echo "\tShow the current nickname of you."
+    call s:EchoHL('/whoi[s] [server] nick(s)', hlname)
+    echo "\tShow information on nicks, separated by commas."
     echo "\n"
     call s:EchoHL('/o[p] [channel] nick(s)', hlname)
     call s:EchoHL('/v[oice] [channel] nick(s)', hlname)
     echo "\tGive operator or voice privileges to the selected nick(s)."
-    echo "\tUse spaces or commas to separate nicks."
+    echo "\tUse spaces or commas to separate them."
     call s:EchoHL('/deo[p] [channel] nick(s)', hlname)
     call s:EchoHL('/dev[oice] [channel] nick(s)', hlname)
     echo "\tDeprive operator or voice privileges of the selected nick(s)."
@@ -3207,7 +3223,7 @@ function! s:Cmd_HELP(...)
     echo "\tSet or show internal option values.  List of settable options will"
     echo "\tbe displayed if option is ommited."
     call s:EchoHL('/uns[et] option', hlname)
-    echo "\tClear the option"
+    echo "\tClear the value of the option"
     echo "\n"
     call s:EchoHL('/al[ias] /new-command /blah blah', hlname)
     echo "\tAdd a new command \"new-command\" which expands into \"blah blah\"."
@@ -3215,11 +3231,13 @@ function! s:Cmd_HELP(...)
     echo "\tRemove it."
     echo "\n"
     call s:EchoHL('/sp[lit]', hlname)
-    echo "\tThis is a prefix to commands such as /JOIN, /LIST, /query, and"
-    echo "\t/SERVER, to execute those commands in separate windows."
+    echo "\tThis is a prefix to commands such as /join, /list, /query, and"
+    echo "\t/server, to execute those commands in separate windows."
     echo "\n"
+    call s:EchoHL('/h[elp]', hlname)
+    echo "\tDisplay this message."
     call s:EchoHL('/dc[c] help', hlname)
-    echo "\tShow a help message for DCC commands."
+    echo "\tDisplay a help message for DCC commands."
     echo "\n"
     call s:PromptEnter(0)
   catch /^Vim:Interrupt$/
@@ -3257,6 +3275,10 @@ endfunction
 function! s:Cmd_REMOTEHELP(args)
   " XXX: Are there any servers who accept arguments?
   call s:DoSend('HELP', a:args)
+endfunction
+
+function! s:Cmd_WHOAMI(...)
+  call s:HandlePromptKey(1, 'You are '.s:GetCurNick(), 'Normal')
 endfunction
 
 "
@@ -3344,7 +3366,7 @@ function! s:ExecuteLoud(comd)
     execute a:comd
     redir END
 
-    let loud = strlen(@")
+    let loud = (strlen(@") && @" !~ '^\r\=\n$')
   finally
     let &more = save_more
     let @" = save_reg
