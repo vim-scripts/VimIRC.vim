@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 Feb 2004
-" Last Change: Wed, 19 Jan 2005 23:28:14 +0900 (JST)
+" Last Change: Fri, 21 Jan 2005 10:39:04 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -225,6 +225,21 @@
 "	messages elsewhere and copy/paste them into the command buffer.  Then
 "	visually select the lines and press <CR>.  (Do with caution so as not
 "	to be kicked off!)
+"
+"   4.	How to send a message starting with a forward-slash?  Just precede it
+"	with slash-space like this: "/ /message" (without quotes)
+"
+"   5.	When writing in a channel, you can use '%' where you have to type the
+"	name of the current channel.  Examples:
+"
+"	  /msg %      You wouldn't normally write this way though.
+"	  /msg %,nick This also works, at least theoretically.
+"	  /notice %   '%'s in the message won't be expanded.
+"	  /topic %    New Topic
+"	  /invite nick %
+"	
+"	You can even omit '%' in the last two examples.  Note also that '%'
+"	will be expanded to the nick, if you are on a chat window.
 
 if exists('g:loaded_vimirc') || &compatible
   finish
@@ -238,7 +253,7 @@ endif
 let s:save_cpoptions = &cpoptions
 set cpoptions&
 
-let s:version = '0.8.10'
+let s:version = '0.8.11'
 let s:client  = 'VimIRC '.s:version
 
 "
@@ -548,30 +563,34 @@ function! s:MainLoop()
   if !(!s:inside_loop && s:opened && s:IsSockOpen())
     return
   endif
-  let s:inside_loop = 1
 
-  " Clearing the vim command line
-  echo ""
-  while 1
-    try
-      call s:HandleKey(getchar(0))
-      if s:DoTimer(!s:RecvData())
+  try
+    let s:inside_loop = 1
+    " Clearing the vim command line
+    echo ""
+    while 1
+      try
+	call s:HandleKey(getchar(0))
+	if s:DoTimer(!s:RecvData())
+	  break
+	endif
+      catch /^IMGONNA/
+	" Get out of the loop
+	" NOTE: You cannot see new messages posted while posting
 	break
-      endif
-    catch /^IMGONNA/
-      " Get out of the loop
-      " NOTE: You cannot see new messages posted while posting
-      break
-    catch /^Vim:Interrupt$/
-      match none
-      if 1 && s:IsBufCommand()
-	startinsert
-      endif
-      break
-    endtry
-  endwhile
-
-  let s:inside_loop = 0
+      catch /^Vim:Interrupt$/
+	if 1 && s:IsBufCommand()
+	  startinsert
+	endif
+	break
+      catch
+	echoerr v:exception
+      endtry
+    endwhile
+  finally
+    match none
+    let s:inside_loop = 0
+  endtry
 endfunction
 
 "
@@ -1133,6 +1152,7 @@ function! s:DoSettings()
   nnoremap <buffer> <silent> O	      :call <SID>OpenBuf_Command()<CR>
   nnoremap <buffer> <silent> <C-N>    :call <SID>WalkThruChanServ(1)<CR>
   nnoremap <buffer> <silent> <C-P>    :call <SID>WalkThruChanServ(0)<CR>
+  match none
 endfunction
 
 function! s:DoHilite()
@@ -1525,11 +1545,9 @@ function! s:HandleKey(key)
     let comd = input(':')
     if strlen(comd)
       call s:Execute(comd)
+      " Pause for commands which produce outputs
       if comd =~# '^\%(ls\|mes\|ju\)'
-	" Pause for commands which produce outputs
-	if a:key ==# s:PromptKey('Hit any key to continue')
-	  return s:HandleKey(a:key)
-	endif
+	return s:HandlePromptKey('Hit any key to continue')
       endif
     endif
   elseif char =~# '[ORo]' && s:IsBufList()
@@ -1553,7 +1571,9 @@ function! s:HandleKey(key)
     else
       call s:OpenBuf_Command()
     endif
-    throw 'IMGONNAPOST'
+    if s:inside_loop
+      throw 'IMGONNAPOST'
+    endif
   elseif char =~# '[/?]'
     call s:Cmd_SEARCH(char)
   elseif char == "\<CR>"
@@ -1620,6 +1640,14 @@ function! s:HandleKey(key)
   echo ''|redraw
 endfunction
 
+" Make use of the key input for the 'Hit any key to continue' prompt
+function! s:HandlePromptKey(mesg, ...)
+  let key = s:PromptKey(a:mesg, a:0 ? a:1 : 'MoreMsg')
+  if key != char2nr(' ')  " Do nothing with space
+    call s:HandleKey(key)
+  endif
+endfunction
+
 function! s:SetLastActive()
   if !s:autoaway
     return
@@ -1678,77 +1706,30 @@ function! s:SendLine(line)
 
   let rx = '^/\(\S\+\)\%(\s\+\(.\+\)\)\=$'
   if a:line =~ rx
-    let comd = toupper(s:StrMatched(a:line, rx, '\1'))
-    let args = s:StrMatched(a:line, rx, '\2')
-
-    " Further expand aliases
-    if comd =~# '^\%(CHAT\)$'
-      let comd = 'QUERY'
-    elseif comd =~# '^\%(MSG\)$'
-      let comd = 'PRIVMSG'
-    elseif comd =~# '^\%(ME\|DESCRIBE\)$'
-      if comd ==# 'ME'
-	let args = s:channel.' '.args
-      endif
-      let comd = 'ACTION'
-    elseif comd =~# '^\%(\%(RE\)\=CONNECT\)$'
-      let comd = 'SERVER'
-    elseif comd =~# '^\%(LEAVE\)$'
-      let comd = 'PART'
-    elseif comd =~# '^\%(BYE\|EXIT\|SIGNOFF\)$'
-      let comd = 'QUIT'
-    elseif comd =~# '^\%(NICKS\)$'
-      let comd = 'NAMES'
-    endif
+    let comd = s:ExpandCmd(s:StrMatched(a:line, rx, '\1'))
+    let args = s:ExpandArgs(comd, s:StrMatched(a:line, rx, '\2'))
 
     if strlen(args)
-      " These provisions are only for removing a leading colon which user
-      " (unnecessarily) appended to the MESSAGE and adding back!  Silly and
+      " This provision is only for removing a leading colon which user
+      " unnecessarily appended to the MESSAGE and adding it back!  Silly and
       " redundant
-      if comd =~# '^\%(G\=\%(AWAY\|QUIT\)\|WALLOPS\)$'
-	" Commands of the following syntax:
-	"   COMMAND [MESSAGE]
-	let rx = '^:\=\(.\+\)$'
-	if args =~ rx
-	  let args = s:StrMatched(args, rx, ':\1')
-	endif
-      elseif comd =~# '^\%(USERHOST\|ISON\)$'
-	" User might delimit targets with commas, which is wrong
-	let args = s:StrCompress(substitute(args, ',', ' ', 'g'))
-      else
-	let rx = ''
-	if comd =~# '^\%(PART\|TOPIC\|PRIVMSG\|NOTICE\|SQU\%(ERY\|IT\)\|KILL\|ACTION\)$'
-	  " COMMAND TARGET [MESSAGE]
-	  let rx = '^\(\S\+\)\s\+:\=\(.\+\)$'
-
-	  " If user ommitted channel(s), supply the current one
-	  if comd =~# '^\%(PART\|TOPIC\)$'
-		\ && !s:IsChannel(matchstr(args, '^\S\+'))
-		\ && strlen(s:channel)
-	    let args = s:channel.(strlen(args) ? ' '.args : '')
-	  endif
-	elseif comd =~# '^\%(KICK\)$'
-	  " COMMAND CHANNEL USER [MESSAGE]
-	  let rx = '^\(\S\+\s\+\S\+\)\s\+:\=\(.\+\)$'
-	endif
-
-	if strlen(rx) && args =~ rx
-	  " NOTE: Matching with empty string always results in true (!!)
-	  let args = s:StrMatched(args, rx, '\1').s:StrMatched(args, rx, ' :\2')
-	endif
+      let rx = s:GetCmdRx(comd)
+      " NOTE: Matching with empty string always results in true (!!)
+      if strlen(rx) && args =~ rx
+	let args = s:StrMatched(args, rx, '\1').s:StrMatched(args, rx, ':\2')
       endif
     endif
 
     if exists('*s:Cmd_{comd}')
       call s:Cmd_{comd}(args)
-    elseif s:IsConnected(s:server)
+    elseif s:IsConnected()
       if exists('*s:Send_{comd}')
 	call s:Send_{comd}(comd, args)
       else
 	call s:DoSend(comd, args)
       endif
     endif
-  elseif s:IsConnected(s:server)
+  elseif s:IsConnected()
     call s:PreSendMSG(a:line)
   endif
 
@@ -1808,7 +1789,7 @@ function! s:Cmd_SET(optval)
     endwhile
   endif
 
-  call s:PromptKey('Hit any key to continue')
+  call s:HandlePromptKey('Hit any key to continue')
 endfunction
 
 function! s:Cmd_SEARCH(comd)
@@ -2062,6 +2043,101 @@ function! s:Cmd_UNALIAS(alias)
   call s:RC_Close()
 endfunction
 
+" Expand command aliases (after s:ExpandAlias())
+function! s:ExpandCmd(comd)
+  let comd = toupper(a:comd)
+  if comd =~# '^\%(CHAT\)$'
+    let comd = 'QUERY'
+  elseif comd =~# '^\%(MSG\)$'
+    let comd = 'PRIVMSG'
+  elseif comd =~# '^\%(ME\)$'
+    let comd = 'ACTION'
+  elseif comd =~# '^\%(\%(RE\)\=CONNECT\)$'
+    let comd = 'SERVER'
+  elseif comd =~# '^\%(LEAVE\)$'
+    let comd = 'PART'
+  elseif comd =~# '^\%(BYE\|EXIT\|SIGNOFF\)$'
+    let comd = 'QUIT'
+  elseif comd =~# '^\%(NICKS\)$'
+    let comd = 'NAMES'
+  endif
+  return comd
+endfunction
+
+" Expand '%' to the current channel, etc.
+function! s:ExpandArgs(comd, args)
+  let args = a:args
+
+  if a:comd =~# '^\%(ISON\|USERHOST\)$'
+    " User might delimit targets with commas, which is wrong
+    let args = s:StrCompress(substitute(a:args, ',', ' ', 'g'))
+  elseif a:comd =~# '^\%(INVITE\)$'
+    " Note the syntactic difference with other binary commands
+    " Syntax: USER CHANNEL
+    let rx = '^\(\S\+\)\%(\s\+\(\S\+\)\=\)\='
+    let nick	= s:StrMatched(a:args, rx, '\1')
+    let channel = s:StrMatched(a:args, rx, '\2')
+    if !s:IsChannel(channel)
+      let args = nick.' '.s:channel
+    endif
+  elseif !s:IsCmdUnary(a:comd)
+    if a:comd =~# '^\%(ACTION\)$'
+      " NOTE: "/ME" command MUST come with no targets specified
+      let args = s:channel.' '.a:args
+    elseif a:comd =~# '^\%(DESCRIBE\|NOTICE\|PART\|PRIVMSG\|TOPIC\)$'
+	  \ || a:comd =~# '^\%(KICK\)$'
+      " Syntax: TARGET [MESSAGE]
+      "		CHANNEL USER [MESSAGE]
+      " Divide arguments into two parts, to see if the former is righteously
+      " a channel or not
+      let rx = '^\(\S\+\)\s*\(.*\)$'
+      let channel = s:StrMatched(a:args, rx, '\1')
+      let args    = s:StrMatched(a:args, rx, '\2')
+
+      let channel = substitute(channel, '%', s:channel, '')
+      if !s:IsChannel(channel) && (a:comd =~# '^\%(KICK\|PART\|TOPIC\)$')
+	" If user ommitted channel(s), supply the current one
+	let args = s:channel.(strlen(a:args) ? ' '.a:args : '')
+      else
+	" Just restore it, potentially squeezing the spaces in-between
+	let args = channel.' '.args
+      endif
+    endif
+  endif
+
+  return args
+endfunction
+
+" Syntax: COMMAND [MESSAGE]
+function! s:IsCmdUnary(comd)
+  return (a:comd =~# '^\%(G\=\%(AWAY\|QUIT\)\|WALLOPS\)$')
+endfunction
+
+" Syntax: COMMAND TARGET [MESSAGE]
+function! s:IsCmdBinary(comd)
+  return (a:comd =~#
+\'^\%(ACTION\|DESCRIBE\|KILL\|NOTICE\|PART\|PRIVMSG\|TOPIC\|SQU\%(ERY\|IT\)\)$')
+endfunction
+
+" Syntax: COMMAND CHANNEL USER [MESSAGE]
+function! s:IsCmdTernary(comd)
+  return (a:comd =~# '^\%(KICK\)$')
+endfunction
+
+function! s:GetCmdRx(comd)
+  let rx = ''
+  if s:IsCmdUnary(a:comd)
+    let rx = '^:\=\(.\+\)$'
+  elseif s:IsCmdBinary(a:comd)
+    let rx = '^\(\S\+ \)\s*:\=\(.\+\)$'
+  elseif s:IsCmdTernary(a:comd)
+    let rx = '^\(\S\+\s\+\S\+ \)\s*:\=\(.\+\)$'
+  else
+    " What the #$*! do we have!?
+  endif
+  return rx
+endfunction
+
 "
 " Help
 "
@@ -2127,7 +2203,7 @@ function! s:Cmd_HELP(...)
   echo "/dcc help"
   echo "\tShow a help message for DCC commands."
   echo "\n"
-  call s:PromptKey('Hit any key to continue')
+  call s:HandlePromptKey('Hit any key to continue')
 endfunction
 
 function! s:Cmd_DCCHELP()
@@ -2144,7 +2220,7 @@ function! s:Cmd_DCCHELP()
   echo "/dcc list"
   echo "\tList all active/pending DCC connections"
   echo "\n"
-  call s:PromptKey('Hit any key to continue')
+  call s:HandlePromptKey('Hit any key to continue')
 endfunction
 
 "
@@ -2208,6 +2284,13 @@ function! s:OfflineMsg()
 	\		? 'Hitting <CR> will send out the current line'
 	\		: 'Hit <Space> to get online'
 	\	      : 'Do /SERVER to get connected'
+  if s:inside_loop
+    if s:debug
+      call s:EchoHL('You have to consider seriously why you are seeing'.
+		   \' this message', 'WarningMsg')
+    endif
+    let s:inside_loop = 0
+  endif
 endfunction
 
 function! s:UpdateTitleBar()
@@ -2914,19 +2997,20 @@ EOP
   return retval
 endfunction
 
-function! s:IsConnected(server)
+function! s:IsConnected()
   let retval = 0
+  let server = a:0 ? a:1 : s:server
 
   perl <<EOP
 {
-  if (my $sref = find_server(scalar(VIM::Eval('a:server'))))
+  if (my $sref = find_server(scalar(VIM::Eval('l:server'))))
     {
       VIM::DoCommand('let retval = '.($sref->{'conn'} & $CS_LOGIN));
     }
 }
 EOP
   if !retval
-    call s:PromptKey('Do /SERVER first to get connected', 'WarningMsg')
+    call s:HandlePromptKey('Do /SERVER first to get connected', 'WarningMsg')
   endif
   return retval
 endfunction
@@ -3064,6 +3148,10 @@ function! s:Send_DCC(comd, args)
 EOP
 endfunction
 
+function! s:Send_DESCRIBE(comd, args)
+  call s:Send_ACTION('ACTION', a:args)
+endfunction
+
 function! s:Send_GAWAY(comd, args)
   call s:SendGlobally('AWAY', a:args)
 endfunction
@@ -3122,32 +3210,24 @@ function! s:Send_LIST(comd, args)
 endfunction
 
 function! s:Send_NAMES(comd, args)
-  let rx = '^\(\S\+\)\%(\s\+\(\S\+\)\)\=$'
-  let chans = s:StrMatched(a:args, rx, '\1')
-  let server= s:StrMatched(a:args, rx, '\2')
-  if !strlen(chans)
-    let chans = s:channel
-  else
+  if !strlen(a:args)
     call s:VisitBuf_Server()
   endif
 
   perl <<EOP
 {
   my $comd  = VIM::Eval('a:comd');
-  my $chans = VIM::Eval('l:chans');
-  my $server= VIM::Eval('l:server');
+  my $chans = VIM::Eval('a:args');
 
   if ($chans)
     {
-      my $format = $chans ? " %s".($server ? " %s" : "") : "";
-
       foreach my $chan (split(/,/, $chans))
 	{
 	  if ($chan)
 	    {
 	      init_nicks($chan);
+	      irc_send("%s %s", $comd, $chan);
 	    }
-	  irc_send("%s$format", $comd, $chan, $server);
 	}
     }
   else
@@ -3287,14 +3367,16 @@ function! s:SendMSG(comd, args)
 
   perl <<EOP
 {
-  if (my ($chan, $mesg) = (VIM::Eval('a:args') =~ /^(\S+) :(.+)$/))
+  if (my ($chans, $mesg) = (VIM::Eval('a:args') =~ /^(\S+) :(.+)$/))
     {
-      unless (index($chan, '='))  # DCC CHAT
+      unless (index($chans, '='))  # DCC CHAT
 	{
-	  dcc_send_chat(substr($chan, 1), $mesg);
+	  dcc_send_chat(substr($chans, 1), $mesg);
 	}
       else
 	{
+	  # According to RFC1459, NOTICE doesn't accept multiple receivers,
+	  # On dancer-ircd (freenode etc.), PRIVMSG doesn't either.
 	  my $priv;
 	  my $comd = VIM::Eval('a:comd');
 	  my $nick = $Current_Server->{'nick'};
@@ -3305,24 +3387,27 @@ function! s:SendMSG(comd, args)
 	    }
 	  $priv = ($comd eq 'PRIVMSG');
 
-	  irc_send("%s %s :%s", $comd, $chan, $mesg);
+	  irc_send("%s %s :%s", $comd, $chans, $mesg);
 
-	  if (is_channel($chan))
+	  foreach my $chan (split(/,/, $chans))
 	    {
-	      irc_chan_line($chan, "%s%s%s%s: %s",
-				  ($priv ? '<' : '['),
-				  find_nickprefix($nick, $chan),
-				  $nick,
-				  ($priv ? '>' : ']'),
-				  $mesg);
-	    }
-	  else
-	    {
-	      irc_chat_line($chan, "%s%s%s: %s",
-				    ($priv ? '<' : '['),
-				    $nick,
-				    ($priv ? '>' : ']'),
-				    $mesg);
+	      if (is_channel($chan))
+		{
+		  irc_chan_line($chan, "%s%s%s%s: %s",
+				      ($priv ? '<' : '['),
+				      find_nickprefix($nick, $chan),
+				      $nick,
+				      ($priv ? '>' : ']'),
+				      $mesg);
+		}
+	      else
+		{
+		  irc_chat_line($chan, "%s%s%s: %s",
+					($priv ? '<' : '['),
+					$nick,
+					($priv ? '>' : ']'),
+					$mesg);
+		}
 	    }
 	}
     }
@@ -3726,6 +3811,7 @@ sub irc_recv
     {
       Encode::from_to($buffer, $ENC_IRC, $ENC_VIM);
       $buffer =~ s/\\x([[:xdigit:]]{2})/pack('H2', $1)/eg;
+      $buffer =~ s/\\x\{([[:xdigit:]]{4})\}/pack('H4', $1)/eg;
     }
 
   @lines = split(/\x0D?\x0A/, $buffer);
@@ -5282,20 +5368,23 @@ sub find_channel
 {
   my ($chan, $sref) = @_;
 
-  unless ($sref)
+  if ($chan)
     {
-      $sref = $Current_Server;
-    }
-
-  # XXX:  Here and there I'm assuming `foreach' is faster than `for'.
-  #	  Correct me if it is wrong.
-  foreach my $cref (@{$sref->{'chans'}})
-    {
-      if ($chan && lc($chan) ne lc($cref->{'name'}))
+      unless ($sref)
 	{
-	  next;
+	  $sref = $Current_Server;
 	}
-      return $cref;
+
+      # XXX:  Here and there I'm assuming `foreach' is faster than `for'.
+      #	      Correct me if it is wrong.
+      foreach my $cref (@{$sref->{'chans'}})
+	{
+	  if ($chan && lc($chan) ne lc($cref->{'name'}))
+	    {
+	      next;
+	    }
+	  return $cref;
+	}
     }
 
   return undef;
