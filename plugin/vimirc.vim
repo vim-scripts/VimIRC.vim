@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 Feb 2004
-" Last Change: Wed, 02 Mar 2005 22:16:35 +0900 (JST)
+" Last Change: Thu, 03 Mar 2005 22:48:05 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -288,7 +288,7 @@
 if exists('g:loaded_vimirc') || &compatible
   finish
 endif
-let s:version = '0.9.9'
+let s:version = '0.9.10'
 
 let s:debug = (s:version =~# '-devel$')
 if !s:debug
@@ -674,19 +674,14 @@ function! s:MainLoop()
   endif
 
   try
-    let s:inside_loop = 1
-    " Clear the vim command line
-    echo ''
-    " Show line-cursor, so the user can easily recognize that she is online
-    call s:HiliteLine('.')
-    call s:ToggleCursor(1)
-
+    call s:PreMainLoop()
     while 1
       try
 	call s:HandleKey(getchar(0))
       catch /:E\%(35\|486\|492\):/
 	" Catch some familiar errors
-	call s:EchoError(s:StrDivide(v:exception, 0))
+	call s:PromptError(s:StrDivide(v:exception, 0))
+	call s:HiliteBuffer('.')
       catch /:E132:/
 	" Pressed the same key for a long time.  Just ignore it.
       endtry
@@ -704,10 +699,21 @@ function! s:MainLoop()
   catch
     echoerr v:exception
   finally
-    let s:inside_loop = 0
-    call s:HiliteClear()
-    call s:ToggleCursor(0)
+    call s:PostMainLoop()
   endtry
+endfunction
+
+function! s:PreMainLoop()
+  let s:inside_loop = 1
+  call s:ToggleCursor(1)
+  " Show line-cursor, so the user can easily recognize that she is online
+  call s:HiliteLine('.')
+endfunction
+
+function! s:PostMainLoop()
+  call s:ToggleCursor(0)
+  call s:HiliteClear()
+  let s:inside_loop = 0
 endfunction
 
 "
@@ -1203,10 +1209,7 @@ function! s:OpenBuf_Command()
     setlocal winfixheight
   endif
 
-  if strlen(getline('$'))
-    call append('$', '')
-  endif
-  $
+  call s:OpenNewLine()
   startinsert
 endfunction
 
@@ -1271,38 +1274,33 @@ function! s:PostOpenBuf_Chat()
 endfunction
 
 function! s:ModifyBuf(modify, ...)
-  call s:{a:modify ? 'Pre' : 'Post'}ModifyBuf(a:0 ? a:1 : bufnr('%'))
-endfunction
-
-function! s:PreModifyBuf(bufnum)
-  let s:save_undolevels = &undolevels
-  set undolevels=-1
-  call setbufvar(a:bufnum, '&modifiable', 1)
-endfunction
-
-function! s:PostModifyBuf(bufnum)
-  if exists('s:save_undolevels')
-    let &undolevels = s:save_undolevels
-    unlet s:save_undolevels
+  let bufnum = a:0 ? a:1 : bufnr('%')
+  if a:modify
+    let s:save_undolevels = &undolevels
+    set undolevels=-1
+    call setbufvar(bufnum, '&modifiable', 1)
+  else
+    if exists('s:save_undolevels')
+      let &undolevels = s:save_undolevels
+      unlet s:save_undolevels
+    endif
+    if 0 && !s:IsBufCommand(bufnum)
+      call setbufvar(bufnum, '&modifiable', 0)
+    endif
   endif
-  "call setbufvar(a:bufnum, '&modifiable', 0)
 endfunction
 
 function! s:PeekBuf(peek)
-  call s:{a:peek ? 'Pre' : 'Post'}PeekBuf()
-endfunction
-
-function! s:PrePeekBuf()
-  let s:autocmd_disable = 1
-  let &equalalways = 0
-  call s:CanOpenChanServ()
-  call s:OpenBuf('vertical 1split')
-endfunction
-
-function! s:PostPeekBuf()
-  silent! close!
-  let s:autocmd_disable = 0
-  let &equalalways = 1
+  if a:peek
+    let s:autocmd_disable = 1
+    let &equalalways = 0
+    call s:CanOpenChanServ()
+    call s:OpenBuf('vertical 1split')
+  else
+    silent! close!
+    let s:autocmd_disable = 0
+    let &equalalways = 1
+  endif
 endfunction
 
 "
@@ -1319,6 +1317,7 @@ function! s:DoSettings()
 
   nnoremap <buffer> <silent> <Space>  :call <SID>MainLoop()<CR>
   nnoremap <buffer> <silent> <CR>     :call <SID>StartWeb()<CR>
+  nnoremap <buffer> <silent> <S-CR>   :call <SID>StartWeb()<CR>
   nnoremap <buffer> <silent> a	      :call <SID>OpenBuf_Command()<CR>
   nnoremap <buffer> <silent> A	      :call <SID>OpenBuf_Command()<CR>
   nnoremap <buffer> <silent> i	      :call <SID>OpenBuf_Command()<CR>
@@ -1854,6 +1853,19 @@ endfunction
 " Providing some user interaction
 "
 
+function! s:HandleEnter(shifted)
+  if s:IsBufInfo()
+    return s:EnterChanServ(a:shifted)
+  elseif !a:shifted
+    if s:IsBufCommand()
+      return s:SendLines()
+    elseif s:IsBufNicks()
+      return s:SelectNickAction()
+    endif
+  endif
+  return s:StartWeb()
+endfunction
+
 function! s:HandleKey(key)
   if ''.a:key == '0'
     " Accepting string values
@@ -1862,38 +1874,45 @@ function! s:HandleKey(key)
   " Special keys such as <F1> are char values already (f_getchar() in eval.c)
   let char = a:key ? nr2char(a:key) : a:key
 
+  call s:HiliteClear()
   " TODO: User-configurable maps
   " Place movement commands earlier, to get quick response
   if char =~# '^[ p]$'	" scroll forward/backward
     call s:DoNormal(nr2char(2 * (char == ' ' ? 3 : 1)))
-  elseif (  char =~# '^[jkhlwbeWBE^$0*#nN+\-;GHLM]$'
+  elseif (  char =~# '^[jkhlwbeWBE^$0*#nN+\-;,GHLM()]$'
 	\|| char == "\<C-B>" || char == "\<C-F>"
 	\|| char == "\<C-D>" || char == "\<C-U>"
 	\|| char == "\<C-E>" || char == "\<C-Y>"
 	\|| char == "\<C-O>" || char == "\<C-^>"
-	\|| char == "\<C-J>")
+	\|| char == "\<C-J>" || char == "\<C-G>"
+	\|| char == "\<BS>")
     " One char commands
     call s:DoNormal(char)
-  elseif char =~# '^[`FTfgmtz]$'
+  elseif char =~# "^[zgftFTm`'Z]$"
     " Commands which take a second char
-    call s:DoNormal(char.nr2char(getchar()))
+    call s:ShowCmd(char)
+    let char = char.nr2char(getchar())
+    if char =~# '^Z[ZQ]$'
+      call s:QuitWhat(char[1] ==# 'Q')
+    else
+      call s:DoNormal(char)
+    endif
   elseif (char + 0) || char == "\<C-W>"
-    " Accept things like "15G", "<C-W>2k"
-    let comd = char
+    " Accept things like "10G", "<C-W>2k"
+    call s:ShowCmd(char)
     while 1
       let key  = getchar()
-      let comd = comd.nr2char(key)
+      let char = char.nr2char(key)
       " Continue if it is a number
       if !(key >= 48 && key <= 57)
 	break
       endif
+      call s:ShowCmd(char)
     endwhile
-    if comd == "\<C-W>\<CR>"
-      if s:IsBufInfo()
-	call s:EnterChanServ(1)
-      endif
+    if char == "\<C-W>\<CR>"
+      call s:HandleEnter(1)
     else
-      call s:DoNormal(comd)
+      call s:DoNormal(char)
     endif
   elseif char == "\<C-N>" || char == "\<C-P>"
     call s:WalkThruChanServ(char == "\<C-N>")
@@ -1913,14 +1932,10 @@ function! s:HandleKey(key)
       call s:Sort{char ==# 'o' ? 'Select' : 'Reverse'}()
     endif
   elseif char =~# '^[AIOaio]$'
-    call s:HiliteClear()
-    if s:IsBufCommand()
+    if s:IsBufCommand() && char =~# '^[AIa]$'
       " Position cursor at an appropriate place
       if char ==# 'I'
 	call s:DoNormal('^')
-      elseif char =~? '^[io]$'
-	" I think most users expect "i" to open a new input line
-	call s:OpenNewLine()
       endif
       execute 'startinsert'.(char ==? 'a' ? '!' : '')
     else
@@ -1929,44 +1944,37 @@ function! s:HandleKey(key)
     throw 'IMGONNAPOST'
   elseif char =~# '^[/?]$'
     call s:SearchWord(char)
-  elseif char == "\<CR>"
-    if s:IsBufInfo()
-      call s:EnterChanServ(0)
-    elseif s:IsBufCommand()
-      call s:SendLines()
-    elseif s:IsBufNicks()
-      call s:SelectNickAction()
-    else
-      call s:StartWeb()
-    endif
-  elseif char == "\<S-CR>"
-    call s:StartWeb()
+  elseif char == "\<CR>" || char == "\<S-CR>"
+    call s:HandleEnter(!(char == "\<CR>"))
   elseif char == "\<F1>"
-    " XXX: THIS DOES NOT WORK!!
     call s:Cmd_HELP()
   elseif char ==? 'q'
     call s:QuitWhat(char ==# 'Q')
   endif
 
-  call s:Hilite{s:IsBufInfo() ? 'Line' : 'Column'}('.')
+  call s:HiliteBuffer('.')
+  if !a:key
+    " KLUGE: Without this, keys such as <C-CR> keep generating the key codes
+    " automatically.
+    call s:DoNormal('lh', 1)
+  endif
   " Speed up jjjjjjjjjjjjj like inputs
-  if a:key && getchar(0) == a:key
-    " Discard excessive keytypes (Chalice)
+  if getchar(1) && getchar(0) == a:key
+    " HACK: Discard excessive keytypes (Chalice)
     while getchar(0)|endwhile
     return s:HandleKey(a:key)
   endif
 
-  " KLUGE: Without this, keys such as <C-CR> keep generating the key codes
-  " automatically.
-  call s:DoNormal('lh', 1)
   call s:SetLastActive()
 endfunction
 
 " Make use of the key input for the 'Hit any key to continue' prompt
 function! s:HandlePromptKey(mesg, ...)
-  let key = s:PromptKey(a:mesg, (a:0 ? a:1 : 'MoreMsg'))
-  if key == char2nr(' ')  " Do nothing with space
-    call s:HiliteLine('.')
+  let key  = s:PromptKey(a:mesg, (a:0 ? a:1 : 'MoreMsg'))
+  let char = nr2char(key)
+  " Do nothing with space etc.
+  if char =~# '^[ ]$' || char == "\<CR>"
+    call s:HiliteBuffer('.')
   else
     call s:HandleKey(key)
   endif
@@ -1996,7 +2004,7 @@ function! s:SendLines() range
 	" Get the destination buffer
 	let destbuf = s:SendLine(s:ExpandAlias(s:StrTrim(getline(i))))
       catch /^SYNTAX ERROR/
-	call s:PromptKey(v:exception, 'ErrorMsg')
+	call s:PromptKey(v:exception, 'Error')
       finally
 	let i = i + 1
       endtry
@@ -2007,7 +2015,7 @@ function! s:SendLines() range
     endif
     return
   finally
-    unlet s:channel
+    unlet! s:channel
     call s:SetLastActive()
   endtry
 
@@ -2069,12 +2077,12 @@ function! s:SelectNickAction() range
 
   if !(choice % 2) && number > 1
     " TODO: Do it.
-    return s:EchoError('Sorry, you cannot do it with mulitple persons at '.
+    return s:PromptError('Sorry, you cannot do it with mulitple persons at '.
 		      \'the same time')
   endif
 
   if (choice == 2 || choice == 3) && !s:IsChannel(b:channel)
-    return s:EchoError('You cannot do it unless you are on a channel.')
+    return s:PromptError('You cannot do it unless you are on a channel.')
   endif
 
   " Set the current server appropriately, so the command will be sent to the
@@ -2097,7 +2105,7 @@ function! s:SelectNickAction() range
     endif
     return
   finally
-    unlet s:channel
+    unlet! s:channel
   endtry
 
   call s:MainLoop()
@@ -2293,12 +2301,11 @@ function! s:Cmd_ALIAS(line)
       call s:RC_Section('Aliases')
       call s:RC_Set('alias', alias, comd)
     else
-      call s:PromptKey('Failed in registering alias', 'Error')
+      call s:PromptError('Failed in registering alias')
     endif
     call s:RC_Close()
   else
-    call s:PromptKey('Syntax: /ALIAS alias command (with arguments)',
-	  \							'WarningMsg')
+    call s:PromptKey('Syntax: /ALIAS alias command (with arguments)', 'Error')
   endif
 endfunction
 
@@ -2582,7 +2589,7 @@ endfunction
 
 function! s:EnterChanServ(split)
   let line = getline('.')
-  let rx = '^\s*[-+]\=\[-\=\d\+\]\(\S\+\)\%(\s\+\(\S\+\)\)\=$'
+  let rx = '^\s*[-+*]\=\[-\=\d\+\]\(\S\+\)\%(\s\+\(\S\+\)\)\=$'
   if line =~ rx
     let channel= s:StrMatch(line, rx, '\1')
     let server = s:StrMatch(line, rx, '\2')
@@ -2875,11 +2882,6 @@ function! s:EchoHL(mesg, hlname)
   endtry
 endfunction
 
-function! s:EchoError(mesg)
-  call s:EchoHL(a:mesg, 'ErrorMsg')
-  call s:Beep(1)
-endfunction
-
 function! s:Execute(comd, ...)
   let silent = (a:0 && a:1)
   let retval = 0
@@ -2929,6 +2931,7 @@ endfunction
 
 function! s:DoNormal(comd, ...)
   let silent = (a:0 && a:1)
+  " XXX: Some commands could get stuck
   execute (silent ? 'silent!' : '') 'normal!' a:comd
 endfunction
 
@@ -2952,8 +2955,24 @@ endfunction
 function! s:Read(file)
   let save_cpoptions = &cpoptions
   set cpoptions-=a
+  if !&l:modifiable
+    setlocal modifiable
+  endif
   call s:ExecuteSilent('read '.a:file)
   let &cpoptions = save_cpoptions
+endfunction
+
+function! s:RedrawStatus(...)
+  if exists(':redrawstatus')
+    "execute 'redrawstatus'.(a:0 && a:1 ? '!' : '')
+    redrawstatus!
+  endif
+endfunction
+
+" Show user that she is in pending-mode
+function! s:ShowCmd(comd)
+  " TODO: Right-align the message
+  echon "\t" a:comd "\r"
 endfunction
 
 function! s:Write(file, append)
@@ -2970,28 +2989,20 @@ function! s:Write(file, append)
   let &cpoptions = save_cpoptions
 endfunction
 
-function! s:RedrawStatus(...)
-  if exists(':redrawstatus')
-    "execute 'redrawstatus'.(a:0 && a:1 ? '!' : '')
-    redrawstatus!
-  endif
-endfunction
-
 " Interactive functions
 
 function! s:GetConf_YN(mesg)
-  if s:inside_loop
-    call s:ToggleCursor(0)
-  endif
+  call s:UntoggleCursor(1)
 
   call s:EchoHL(' '.a:mesg.'? (y/[n]): ', 'Question')
-  let char = getchar()
+  try
+    let char = nr2char(getchar())
+  catch /^Vim:Interrupt$/
+    let char = ''
+  endtry
 
-  if s:inside_loop
-    call s:ToggleCursor(1)
-  endif
-  call s:ScreenClear(0)
-  return (nr2char(char) ==? 'y')
+  call s:UntoggleCursor(0)
+  return (char ==? 'y')
 endfunction
 
 function! s:Input(mesg, ...)
@@ -3003,34 +3014,62 @@ function! s:InputS(mesg)
 endfunction
 
 function! s:RequestInput(secret, mesg, text)
-  if s:inside_loop
-    call s:ToggleCursor(0)
-  endif
+  call s:UntoggleCursor(1)
 
-  let input = s:StrCompress(a:secret ? inputsecret(a:mesg.': ')
-	\			     : input(a:mesg.': ', a:text))
+  try
+    let input = s:StrCompress(a:secret ? inputsecret(a:mesg.': ')
+	  \			       : input(a:mesg.': ', a:text))
+  catch /^Vim:Interrupt$/
+    let input = ''
+  endtry
 
-  if s:inside_loop
-    call s:ToggleCursor(1)
-  endif
-  call s:ScreenClear(0)
+  call s:UntoggleCursor(0)
   return input
 endfunction
 
 function! s:PromptKey(mesg, ...)
+  call s:UntoggleCursor(1)
+
   call s:EchoHL(a:mesg, (a:0 ? a:1 : 'MoreMsg'))
-  let key = getchar()
-  call s:ScreenClear(0)
+  try
+    let key = getchar()
+  catch /^Vim:Interrupt$/
+    let key = 0
+  endtry
+
+  call s:UntoggleCursor(0)
   return key
 endfunction
 
+function! s:PromptError(mesg)
+  call s:Beep(1)
+  call s:PromptKey(a:mesg, 'ErrorMsg')
+endfunction
+
 function! s:RequestFile(mesg)
-  return has('browse') ? browse(0, 'Select file '.a:mesg, './', '')
-	\	       : input('Enter filename '.a:mesg.': ')
+  call s:UntoggleCursor(1)
+
+  try
+    let file = has('browse') ? browse(0, 'Select file '.a:mesg, './', '')
+	  \		     : input('Enter filename '.a:mesg.': ')
+  catch /^Vim:Interrupt$/
+    let file = ''
+  endtry
+
+  call s:UntoggleCursor(0)
+  return file
 endfunction
 
 function! s:SearchWord(comd)
-  let word = input(a:comd)
+  call s:UntoggleCursor(1)
+
+  try
+    let word = input(a:comd)
+  catch /^Vim:Interrupt$/
+    let word = ''
+  endtry
+
+  call s:UntoggleCursor(0)
   if strlen(word)
     let @/ = word
   endif
@@ -3314,6 +3353,20 @@ function! s:ToggleCursor(hide)
     let bg = a:hide ? '' : s:bgcolor_cursor
     call s:SetHilite('Cursor', fg, bg)
   endif
+endfunction
+
+function! s:UntoggleCursor(show)
+  if s:inside_loop
+    call s:ToggleCursor(!a:show)
+  endif
+  if !a:show
+    call s:ScreenClear(0)
+  endif
+endfunction
+
+function! s:HiliteBuffer(lnum, ...)
+  call s:Hilite{s:IsBufInfo() ? 'Line' : 'Column'}(a:lnum,
+	\					  (a:0 ? a:1 : 'VimIRCCursor'))
 endfunction
 
 function! s:HiliteColumn(bogus, ...)
@@ -3933,7 +3986,7 @@ function! s:Send_DCC(comd, args)
 	endif
 	let desc = s:ValidatePath(desc)
 	if !filereadable(desc)
-	  return s:PromptKey('File '.desc.' not available', 'Error')
+	  return s:PromptError('File '.desc.' not available')
 	endif
       endif
     endif
@@ -4043,11 +4096,14 @@ function! s:Send_NICK(comd, args)
   let nick = a:args
   if !strlen(a:args)
     let nick = s:Input('Enter a new nickname')
-  endif
-  if strlen(nick)
-    if nick =~ '[[:blank:][:cntrl:]]'
-      return s:HandlePromptKey('Invalid nickname: '.nick)
+    if !strlen(nick)
+      return
     endif
+  endif
+
+  if nick =~ '[[:blank:][:cntrl:]]'
+    call s:HandlePromptKey('Invalid nickname: '.nick, 'Error')
+  else
     call s:DoSend(a:comd, nick)
   endif
 endfunction
@@ -4160,7 +4216,7 @@ function! s:PreSendMSG(mesg)
     if send
       call s:SendMSG('PRIVMSG', s:channel.' :'.mesg)
     else
-      call s:HandlePromptKey('You are not on a channel.', 'Error')
+      call s:PromptError('You are not on a channel.')
     endif
   endif
   return send
@@ -4749,7 +4805,6 @@ sub irc_send
 our $INFO_UPDATE = 0x01;
 our $INFO_HASNEW = 0x02;
 
-
 sub update_info
 {
   my $orgbuf = vim_bufnr();
@@ -4771,7 +4826,7 @@ sub update_info
 				  ? '-'
 				  : ($sref->{'info'} & $INFO_HASNEW)
 				    ? '+'
-				    : !($sref->{'bufnum'} - $Current_ChanServ)
+				    : ($sref->{'bufnum'} == $Current_ChanServ)
 				      ? '*' : ' ',
 				  $sref->{'bufnum'},
 				  $sref->{'server'}));
@@ -4782,7 +4837,7 @@ sub update_info
 			      sprintf(" %s[%d]list@%s",
 				      $dead
 				      ? '-'
-				      : !($sref->{'list'} - $Current_ChanServ)
+				      : ($sref->{'list'} == $Current_ChanServ)
 					? '*' : ' ',
 				      $sref->{'list'},
 				      $sref->{'server'}));
@@ -4796,8 +4851,8 @@ sub update_info
 				      ? '-'
 				      : ($cref->{'info'} & $INFO_HASNEW)
 					? '+'
-					: !($cref->{'bufnum'}
-							  - $Current_ChanServ)
+					: ($cref->{'bufnum'}
+							  == $Current_ChanServ)
 					  ? '*' : ' ',
 				      $cref->{'bufnum'},
 				      $cref->{'name'},
@@ -4812,8 +4867,8 @@ sub update_info
 				      ? '-'
 				      : ($chat->{'info'} & $INFO_HASNEW)
 					? '+'
-					: !($chat->{'bufnum'}
-							  - $Current_ChanServ)
+					: ($chat->{'bufnum'}
+							  == $Current_ChanServ)
 					  ? '*' : ' ',
 				      $chat->{'bufnum'},
 				      $chat->{'nick'},
