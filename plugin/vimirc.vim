@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 February 2004
-" Last Change: Fri, 12 Mar 2004 10:06:02 +0900 (JST)
+" Last Change: Sat, 13 Mar 2004 17:11:25 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -123,7 +123,7 @@ endif
 let s:save_cpoptions = &cpoptions
 set cpoptions&
 
-let s:version = '0.5.2'
+let s:version = '0.5.3'
 let s:client = 'VimIRC '.s:version
 " Set this to zero when releasing, which I'll occasionally forget, for sure
 let s:debug = 0
@@ -226,13 +226,16 @@ function! s:InitVars()
 
   " User options below
 
-  " Set your favorite farewell message
+  " Favorite farewell message
   let s:partmsg = s:GetVimVar('g:vimirc_partmsg')
   if !strlen(s:partmsg)
     let s:partmsg = (s:debug ? 'Testing ' : '').s:client.' (IRC client for Vim)'
   endif
   " Prepend a leading colon
   let s:partmsg = substitute(s:partmsg, '^[^:]', ':&', '')
+
+  " Preferred language.  Encoding name in a form Perl's Encode module accepts
+  let s:preflang = s:GetVimVar('g:vimirc_preflang')
 endfunction
 
 function! s:SetGlobVars()
@@ -454,6 +457,10 @@ function! s:IsBufChannel(...)
   return !match(bufname(a:0 && a:1 ? a:1 : '%'), s:bufname_channel)
 endfunction
 
+function! s:IsBufNames()
+  return !match(bufname(a:0 && a:1 ? a:1 : '%'), s:bufname_names)
+endfunction
+
 function! s:IsBufCommand(...)
   return !match(bufname(a:0 && a:1 ? a:1 : '%'), s:bufname_command)
 endfunction
@@ -553,7 +560,8 @@ function! s:OpenBuf_Command()
     let command = 'botright 1split'
   else
     let command = 'belowright 1split'
-    call s:SelectWindow(s:GetBufNum_Channel(channel))
+    call s:SelectWindow(strlen(channel) ? s:GetBufNum_Channel(channel)
+	  \				: s:GetBufNum_Server())
   endif
 
   if bufnum >= 0
@@ -686,6 +694,8 @@ function! s:InitBuf_Names(bufname, channel)
   call s:DoSettings()
   call s:DoHilite_Names()
   setlocal nowrap
+  nnoremap <buffer> <silent> <CR> :call <SID>SelectNickCmd()<CR>
+  vnoremap <buffer> <silent> <CR> :call <SID>SelectNickCmd()<CR>
   call s:SetBufNum(a:bufname, bufnr('%'))
 endfunction
 
@@ -837,6 +847,8 @@ function! s:HandleKey(key)
     elseif s:IsBufList()
       call s:JoinChannel()
       echo ""
+    elseif s:IsBufNames()
+      call s:SelectNickCmd()
     else
       execute 'normal!' char
     endif
@@ -909,11 +921,7 @@ function! s:SendingCommand()
 	  " NOTE: I'm reusing the command window for querying.  Conversations
 	  " will be displayed in the current server window.
 	  if strlen(args)
-	    let b:query = args
-	    call s:SetCommandMode(b:channel)
-	    call append('$', '')
-	    $
-	    startinsert
+	    call s:InitiateQuery(args)
 	    return
 	  else
 	    let b:query = ''
@@ -998,6 +1006,80 @@ function! s:JoinChannel()
   if strlen(chan) && s:GetConf_YN("Join the channel ".chan."?")
     call s:SetCurrentServer(b:server)
     call s:Send_JOIN('JOIN', chan)  " first parameter can be any string i think
+  endif
+endfunction
+
+function! s:InitiateQuery(nick)
+  if !s:IsBufCommand()
+    call s:OpenBuf_Command()
+  endif
+  let b:query = a:nick
+  call s:SetCommandMode(b:channel)
+
+  if strlen(getline('$'))
+    call append('$', '')
+  endif
+  $
+  startinsert
+endfunction
+
+function! s:SelectNickCmd() range
+  if !s:IsBufNames()
+    return
+  endif
+
+  let nicks = ''
+  let i = a:firstline
+  while i <= a:lastline
+    let nick = substitute(getline(i), '^[@+]\+', '', '')
+    if strlen(nick)
+      let nicks = nicks.(strlen(nicks) ? ' ' : '').nick
+    endif
+    let i = i + 1
+  endwhile
+
+  let nnick = a:lastline - a:firstline + 1
+  let comds = "&whois\n&query\n&control"
+  let choice= confirm("What do you do with ".nicks."?", comds)
+  if !choice
+    return
+  endif
+
+  if choice == 1
+    while strlen(nicks)
+      let nick = matchstr(nicks, '^\S\+')
+      call s:SendCommand('WHOIS', nick)
+      let nicks = substitute(nicks, '^\S\+\s*', '', '')
+    endwhile
+  elseif choice == 2
+    if nnick > 1
+      echo "Sorry, you cannot query mulitple persons at the same time"
+      return
+    endif
+    call s:InitiateQuery(nicks)
+    " FIXME:
+    if mode() !=# 'i'
+      startinsert
+    endif
+  elseif choice == 3
+    let comds = "&1 Op\n&2 Deop\n&3 Voice\n&4 Devoice"
+    let choice= confirm("Choose one of these", comds)
+    if !choice
+      return
+    endif
+
+    let onoff = (choice % 2) ? '+' : '-'
+    let mode  = choice >= 3 ? 'v' : 'o'
+    let modes = mode
+
+    if nnick > 1
+      let i = 1
+      while i < nnick
+	let modes = modes.mode
+	let i = i + 1
+      endwhile
+    endif
+    call s:SendCommand('MODE', b:channel.' '.onoff.modes.' '.nicks)
   endif
 endfunction
 
@@ -1094,7 +1176,8 @@ function! s:SetUserMode(umode)
   let bufnum = s:GetBufNum_Server()
   if bufnum >= 0
     call setbufvar(bufnum, 'umode', a:umode)
-    call setbufvar(bufnum, 'title', '  '.s:nick." [".a:umode.'] @ '.s:server)
+    call setbufvar(bufnum, 'title', '  '.s:GetCurrentNick().
+	  \' [+'.a:umode.'] @ '.s:server)
     call s:RedrawStatus()
     call s:UpdateTitleBar()
   endif
@@ -1264,7 +1347,10 @@ function! s:SetEncoding()
   " The idea is, we should load & use conversion-related codes only if
   " necessary
   let ircenc = ''
-  if &encoding =~# '\%(cp932\|euc-jp\)'
+  " TODO: Deal with encodings other than Japanese
+  if strlen(s:preflang)
+    let ircenc = s:preflang
+  elseif &encoding =~# '\%(cp932\|euc-jp\)'
     let ircenc = '7bit-jis'
   endif
   if !strlen(ircenc)
@@ -1401,7 +1487,7 @@ EOP
 endfunction
 
 function! s:Send_LIST(comd, args)
-  " MEMO: Some servers don't send 321 RPL_LISTSTART, so open a list buffer
+  " MEMO: Some servers don't send "321 RPL_LISTSTART", so open a list buffer
   " befor we send the command
   call s:OpenBuf_List()
   call s:PreBufModify()
@@ -1411,22 +1497,15 @@ function! s:Send_LIST(comd, args)
 endfunction
 
 function! s:Send_NICK(comd, args)
-  let args = a:args
+  let nick = a:args
   if !strlen(a:args)
-    let args = s:Input('Enter a new nickname')
-    if !strlen(args)
+    let nick = s:Input('Enter a new nickname')
+    if !strlen(nick)
       return
     endif
+    echo ''
   endif
-
-  let s:nick = args
-  perl <<EOP
-{
-  $Current_Server->{'nick'} = VIM::Eval('s:nick');
-}
-EOP
-  call s:SetUserMode('')
-  call s:SendCommand(a:comd, s:nick)
+  call s:SendCommand(a:comd, substitute(nick, '\s\+', '-', 'g'))
 endfunction
 
 function! s:Send_PART(comd, args)
@@ -1562,6 +1641,24 @@ function! s:SetCurrentServer(server)
 EOP
 endfunction
 
+function! s:GetCurrentNick()
+  " Enabling to hold different nicks across servers
+  let nick = s:GetVimVar('s:nick_'.s:server)
+  if !strlen(nick)
+    let nick = s:nick
+  endif
+  return nick
+endfunction
+
+function! s:SetCurrentNick(nick)
+  let s:nick_{s:server} = a:nick
+  perl <<EOP
+{
+  $Current_Server->{'nick'} = VIM::Eval('a:nick');
+}
+EOP
+endfunction
+
 " Quit all connected servers at once
 function! s:QuitServers()
   perl <<EOP
@@ -1631,7 +1728,7 @@ function! s:Server(server)
   my $server= VIM::Eval('l:server');
   my $port  = VIM::Eval('l:port') + 0;
 
-  my $nick  = VIM::Eval('s:nick');
+  my $nick  = VIM::Eval('s:GetCurrentNick()');
   my $user  = VIM::Eval('s:user');
   my $realname= VIM::Eval('s:realname');
   my $umode = VIM::Eval('s:umode');
@@ -1652,6 +1749,7 @@ function! s:Server(server)
 			    sock      => $sock,
 			    conn      => 0,
 			    nick      => $nick,
+			    umode     => undef,
 			    away      => 0,
 			    motd      => 0,
 			    chans     => undef,
@@ -1782,7 +1880,6 @@ sub vim_printf
 sub send_msg
 {
   my $format= shift;
-  my $comd  = shift;
   my @args  = @_;
   my $sock  = $Current_Server->{'sock'};
 
@@ -1796,7 +1893,7 @@ sub send_msg
 	    }
 	}
 
-      printf($sock "$format\r\n", $comd, @args);
+      printf($sock "$format\r\n", @args);
     }
 }
 
@@ -1936,39 +2033,150 @@ sub process_ctcp_reply
   return length(${$mesg});
 }
 
+sub set_umode
+{
+  my ($from, $modes) = @_;
+
+  while ($modes =~ s/^\s*([+-])(\S+)//)
+    {
+      my $add = ($1 eq '+');
+
+      foreach my $mode (split(//, $2))
+	{
+	  if ($add)
+	    {
+	      unless ($Current_Server->{'umode'} =~ /$mode/)
+		{
+		  $Current_Server->{'umode'} .= $mode;
+		}
+	    }
+	  else
+	    {
+	      $Current_Server->{'umode'} =~ s/$mode//;
+	    }
+	}
+    }
+
+  add_line('', "*: $from sets mode: +$Current_Server->{'umode'}");
+  VIM::DoCommand("call s:SetUserMode(\"$Current_Server->{'umode'}\")");
+}
+
+sub set_cmode
+{
+  my ($chan, $mode) = @_;
+  my $cref = get_channel($chan);
+  my $nref = get_nicks($chan);
+
+  while ($mode =~ s/^\s*([+-])(\S+)((?:\s+(?:[^+-]\S+))*)//)
+    {
+      my $add = ($1 eq '+');
+      my $arg = $3;
+      my ($val, $nicks);
+
+      for ($2)
+	{
+	  if (/o/i)
+	    {
+	      $val  = $UMODE_CHOP;
+	      $nicks= $arg;
+	      last;
+	    }
+	  if (/v/)
+	    {
+	      $val  = $UMODE_VOICE;
+	      $nicks= $arg;
+	      last;
+	    }
+	}
+
+      if ($nicks)
+	{
+	  foreach my $nick (split(/ +/, $nicks))
+	    {
+	      next unless $nick;
+
+	      if ($add)
+		{
+		  $nref->{$nick} |= $val;
+		  if (is_me($nick))
+		    {
+		      $cref->{'umode'} |= $val;
+		    }
+		}
+	      else
+		{
+		  $nref->{$nick} &= ~$val;
+		  if (is_me($nick))
+		    {
+		      $cref->{'umode'} &= ~$val;
+		    }
+		}
+	      list_nicks($chan);
+	    }
+	}
+      else
+	{
+	  if ($add)
+	    {
+	      $cref->{'cmode'} |= $val;
+	    }
+	  else
+	    {
+	      $cref->{'cmode'} &= ~$val;
+	    }
+	}
+    }
+}
+
 sub add_channel
 {
-  my $chan = lc(shift);
+  my $chan = shift;
+  # We should not change the case when adding channels.  It may cause troubles
+  # with non-ascii characters
 
-  unless (exists($Current_Server->{'chans'}->{$chan}))
+  unless (get_channel($chan))
     {
-      $Current_Server->{'chans'}->{$chan} = { umode => 0,
+      $Current_Server->{'chans'}->{$chan} = { cname => $chan,
+					      umode => 0,
 					      cmode => 0,
-					      nicks => {} };
+					      nicks => {}   };
     }
 }
 
 sub get_channel
 {
-  my $chan = lc(shift);
-  return $Current_Server->{'chans'}->{$chan};
+  my $name = lc(shift);
+  my $cref;
+
+  # We have to compare channel names one by one, ignoring case
+  # XXX: Iterating over the same hash with each() could cause an endless loop
+  #	 if done recursively.  TOO DANGEROUS!
+  foreach my $chan (keys(%{$Current_Server->{'chans'}}))
+    {
+      if ($name eq lc($chan))
+	{
+	  $cref = $Current_Server->{'chans'}->{$chan};
+	  last;
+	}
+    }
+  return $cref;
+}
+
+sub delete_channel
+{
+  my $chan = shift;
+
+  if (my $cref = get_channel($chan))
+    {
+      delete($Current_Server->{'chans'}->{$cref->{'cname'}});
+    }
+  VIM::DoCommand("call s:CloseChannel(\"$chan\")");
 }
 
 sub get_nicks
 {
   my $cref = get_channel(shift);
   return $cref->{'nicks'};
-}
-
-sub delete_channel
-{
-  my $chan = lc(shift);
-
-  if (exists($Current_Server->{'chans'}->{$chan}))
-    {
-      delete($Current_Server->{'chans'}->{$chan});
-    }
-  VIM::DoCommand("call s:CloseChannel(\"$chan\")");
 }
 
 sub get_nickprefix
@@ -2009,9 +2217,8 @@ sub rename_nick
       my $mode = $nref->{$old};
       delete_nick($old, $chan);
       add_nick($new, $mode, $chan);
-      return 1;
     }
-  return 0;
+  return exists($nref->{$new});
 }
 
 sub delete_nick
@@ -2029,7 +2236,7 @@ sub delete_nick
 
 sub list_nicks
 {
-  my $chan = lc(shift);
+  my $chan = shift;
   my $nref = get_nicks($chan);
   my @nicks= map { get_nickprefix($nref->{$_}).$_ } keys(%{$nref});
 
@@ -2052,7 +2259,7 @@ sub list_nicks
 
 sub add_line
 {
-  my $chan = lc(shift);
+  my $chan = shift;
   my $line = ref($_[0]) ? $_[0] : \$_[0];
   my $bnum = is_channel($chan) ? VIM::Eval("s:GetBufNum_Channel(\"$chan\")")
 			       : VIM::Eval("s:GetBufNum_Server()");
@@ -2091,6 +2298,10 @@ sub parse_number
     {
       set_connected(1);
       add_line('', $mesg);
+      unless (is_me($nick))	# user had to change nick when connecting
+	{
+	  VIM::DoCommand("call s:SetCurrentNick(\"$nick\")");
+	}
     }
   elsif ($comd == 002)	# RPL_YOURHOST
     {
@@ -2114,9 +2325,9 @@ sub parse_number
     }
   elsif ($comd == 221)	# RPL_UMODEIS
     {
-      if ($mesg =~ /^(\S+)/)
+      if ($mesg =~ /^\+(\S*)/)
 	{
-	  add_line('', "*: $nick sets mode: $1");
+	  add_line('', "*: Your user mode is: +$1");
 	  VIM::DoCommand("call s:SetUserMode(\"$1\")");
 	}
     }
@@ -2212,6 +2423,7 @@ sub parse_number
     }
   elsif ($comd == 323)	# RPL_LISTEND
     {
+      VIM::DoCommand('call s:SelectWindow(s:GetBufNum_List())');
       VIM::DoCommand('call s:BufTrim()|call s:HiliteLine(".")');
       add_line('', $mesg);
     }
@@ -2381,65 +2593,7 @@ sub parse_mode
     {
       if (is_channel($chan))
 	{
-	  my $cref = get_channel($chan);
-	  my $nref = get_nicks($chan);
-
-	  while ($mode =~ /([-+])(.)(?:\s+([^-+]\S+))?/g)
-	    {
-	      my $add = ($1 eq '+');
-	      my $arg = $3;
-	      my ($nick, $val);
-
-	      for ($2)
-		{
-		  # TODO: Handle channel modes
-		  if (/o/i)
-		    {
-		      $nick = $arg;
-		      $val  = $UMODE_CHOP;
-		      last;
-		    }
-		  if (/v/)
-		    {
-		      $nick = $arg;
-		      $val  = $UMODE_VOICE;
-		      last;
-		    }
-		}
-
-	      if ($nick)
-		{
-		  if ($add)
-		    {
-		      $nref->{$nick} |= $val;
-		      if (is_me($nick))
-			{
-			  $cref->{'umode'} |= $val;
-			}
-		    }
-		  else
-		    {
-		      $nref->{$nick} &= ~$val;
-		      if (is_me($nick))
-			{
-			  $cref->{'umode'} &= ~$val;
-			}
-		    }
-		  list_nicks($chan);
-		}
-	      else
-		{
-		  if ($add)
-		    {
-		      $cref->{'cmode'} |= $val;
-		    }
-		  else
-		    {
-		      $cref->{'cmode'} &= ~$val;
-		    }
-		}
-	    }
-
+	  set_cmode($chan, $mode);
 	  add_line($chan, "*: $from sets new mode: $mode");
 	  if (0)
 	    {
@@ -2449,8 +2603,7 @@ sub parse_mode
       else
 	{
 	  # Should be about yourself, right?
-	  add_line('', "*: $chan sets mode: $mode");
-	  VIM::DoCommand("call s:SetUserMode(\"$mode\")");
+	  set_umode($chan, $mode);
 	}
     }
 }
@@ -2461,12 +2614,13 @@ sub parse_nick
 
   if (my ($nick) = (${$args} =~ /^:(.*)$/))
     {
-      if (is_me($nick))
+      if (is_me($from))
 	{
 	  add_line('', "*: New nick $nick approved");
+	  VIM::DoCommand("call s:SetCurrentNick(\"$nick\")");
 	  send_msg("MODE %s", $nick);
 	}
-      while (my $chan = each(%{$Current_Server->{'chans'}}))
+      foreach my $chan (keys(%{$Current_Server->{'chans'}}))
 	{
 	  if (rename_nick($from, $nick, $chan))
 	    {
@@ -2557,7 +2711,7 @@ sub parse_quit
   my ($from, $args) = @_;
   my ($mesg) = (${$args} =~ /^:(.*)$/);
 
-  while (my $chan = each(%{$Current_Server->{'chans'}}))
+  foreach my $chan (keys(%{$Current_Server->{'chans'}}))
     {
       if (delete_nick($from, $chan))
 	{
