@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 Feb 2004
-" Last Change: Wed, 21 Apr 2004 01:58:56 +0900 (JST)
+" Last Change: Thu, 22 Apr 2004 15:23:06 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -134,6 +134,9 @@
 "		  Typing "i" or "I" will let you in the `command mode'
 "		  described below, just as you do in Vim to go insert mode.
 "
+"		  ":", "/" and "?" keys will prompt you to enter ex-commands
+"		  or search strings as usual.
+"
 "		  Hit <Ctrl-C> to get out of control and freely move around
 "		  or do ex commands.  Hit <Space> to re-enter the normal
 "		  (online) mode again.
@@ -149,6 +152,10 @@
 "
 "		  * In a nicks window, you can hit <CR> to choose an action to
 "		    take against the one whom the cursor is on.
+"
+"		  * <C-N> / <C-P> keys are available in all buffers, mapped to
+"		    cycle forward/backward through channel/server buffers.
+"		    Useful in single-window mode.
 "
 "   Command mode: This is just a normal buffer opened (at the bottom of the
 "		  screen|below the current window).  Enter IRC commands here.
@@ -179,10 +186,10 @@
 "   * handling of channel-mode changes
 "   * IPv6
 "   * SSL
-"   * command-line completion (with tab key)
-"   * scripting (?)
 "   * nicks auto-identification (done for freenode)
+"   * command-line completion (with tab key)
 "   * handling of control characters (bold, underline etc.)
+"   * scripting (?)
 "   * help (both /help command and local help file)
 "   * menus (I personally never use menus)
 "   * etc. etc.
@@ -219,7 +226,7 @@ endif
 let s:save_cpoptions = &cpoptions
 set cpoptions&
 
-let s:version = '0.8.3'
+let s:version = '0.8.4'
 let s:client  = 'VimIRC '.s:version
 
 "
@@ -448,7 +455,10 @@ function! s:QuitVimIRC()
   call s:ResetCmds()
   call s:ResetAutocmds()
   call s:ResetGlobVars()
-  call s:QuitServers()
+
+  call s:Send_GQUIT()
+  call s:ResetPerlVars()
+
   call s:CloseVimIRC()
   let s:opened = 0
 endfunction
@@ -747,79 +757,9 @@ function! s:VisitBuf_Chat(nick, server)
   return (s:SelectWindow(s:GetBufNum_Chat(a:nick, a:server)) >= 0)
 endfunction
 
-function! s:EnterChanServ(split)
-  let rx = '^\s*[-+]\=\[-\=\d\+\]\(\S\+\)\%(\s\+\(\S\+\)\)\=$'
-  let line = getline('.')
-  if line =~ rx
-    let channel= s:StrMatched(line, rx, '\1')
-    let server = s:StrMatched(line, rx, '\2')
-
-    let save_server = s:server
-    let s:server = strlen(server) ? server : channel
-
-    if s:singlewin && a:split
-      call s:VisitBuf_ChanServ()
-      split
-    endif
-    if !strlen(server) " Must be a server
-      call s:OpenBuf_Server()
-    elseif s:IsChannel(channel)
-      call s:OpenBuf_Channel(channel)
-    else
-      call s:OpenBuf_Chat(channel, server)
-    endif
-    let s:server = save_server
-  endif
-endfunction
-
 "
 " Opening buffers
 "
-
-function! s:PostOpenBuf_Server()
-  if s:autocmd_disable
-    return
-  endif
-
-  let abuf = expand('<abuf>') + 0
-  let server = getbufvar(abuf, 'server')
-  if strlen(server) && s:singlewin
-    call s:ResetChanServ(server, '')
-  endif
-endfunction
-
-function! s:PostOpenBuf_Channel()
-  if s:autocmd_disable
-    return
-  endif
-
-  let abuf = expand('<abuf>') + 0
-  let channel = getbufvar(abuf, 'channel')
-  let server  = getbufvar(abuf, 'server')
-  let orgbuf  = bufnr('%')
-  if strlen(channel) && strlen(server)
-    call s:OpenBuf_Nicks(channel, server)
-    call s:SelectWindow(orgbuf)
-    if s:singlewin
-      call s:ResetChanServ(server, channel)
-    endif
-  endif
-endfunction
-
-function! s:PostOpenBuf_Chat()
-  if s:autocmd_disable
-    return
-  endif
-
-  let abuf  = expand('<abuf>') + 0
-  let nick  = getbufvar(abuf, 'channel')
-  let server= getbufvar(abuf, 'server')
-  if strlen(nick) && strlen(server)
-    if s:singlewin
-      call s:ResetChanServ(server, nick)
-    endif
-  endif
-endfunction
 
 function! s:OpenBuf(comd, ...)
   try
@@ -1009,6 +949,31 @@ function! s:OpenBuf_Command()
   startinsert
 endfunction
 
+function! s:EnterChanServ(split)
+  let rx = '^\s*[-+]\=\[-\=\d\+\]\(\S\+\)\%(\s\+\(\S\+\)\)\=$'
+  let line = getline('.')
+  if line =~ rx
+    let channel= s:StrMatched(line, rx, '\1')
+    let server = s:StrMatched(line, rx, '\2')
+
+    let save_server = s:server
+    let s:server = strlen(server) ? server : channel
+
+    if s:singlewin && a:split
+      call s:VisitBuf_ChanServ()
+      split
+    endif
+    if !strlen(server) " Must be a server
+      call s:OpenBuf_Server()
+    elseif s:IsChannel(channel)
+      call s:OpenBuf_Channel(channel)
+    else
+      call s:OpenBuf_Chat(channel, server)
+    endif
+    let s:server = save_server
+  endif
+endfunction
+
 function! s:OpenBuf_Chat(nick, server)
   let bufnum = s:GetBufNum_Chat(a:nick, a:server)
   let loaded = (bufnum >= 0)
@@ -1031,6 +996,51 @@ function! s:OpenBuf_Chat(nick, server)
   endif
 endfunction
 
+function! s:PostOpenBuf_Server()
+  if s:autocmd_disable
+    return
+  endif
+
+  let abuf = expand('<abuf>') + 0
+  let server = getbufvar(abuf, 'server')
+  if strlen(server) && s:singlewin
+    call s:ResetChanServ(server, '')
+  endif
+endfunction
+
+function! s:PostOpenBuf_Channel()
+  if s:autocmd_disable
+    return
+  endif
+
+  let abuf = expand('<abuf>') + 0
+  let channel = getbufvar(abuf, 'channel')
+  let server  = getbufvar(abuf, 'server')
+  let orgbuf  = bufnr('%')
+  if strlen(channel) && strlen(server)
+    call s:OpenBuf_Nicks(channel, server)
+    call s:SelectWindow(orgbuf)
+    if s:singlewin
+      call s:ResetChanServ(server, channel)
+    endif
+  endif
+endfunction
+
+function! s:PostOpenBuf_Chat()
+  if s:autocmd_disable
+    return
+  endif
+
+  let abuf  = expand('<abuf>') + 0
+  let nick  = getbufvar(abuf, 'channel')
+  let server= getbufvar(abuf, 'server')
+  if strlen(nick) && strlen(server)
+    if s:singlewin
+      call s:ResetChanServ(server, nick)
+    endif
+  endif
+endfunction
+
 function! s:PrePeekBuf()
   let s:autocmd_disable = 1
   let &equalalways = 0
@@ -1043,6 +1053,10 @@ function! s:PostPeekBuf()
   let s:autocmd_disable = 0
   let &equalalways = 1
 endfunction
+
+"
+" Buffer initilization
+"
 
 function! s:DoSettings()
   setlocal bufhidden=hide
@@ -1220,7 +1234,7 @@ function! s:InitBuf_Chat(bufname, nick, server)
 endfunction
 
 "
-" And closing
+" Closing buffers
 "
 
 function! s:PreCloseBuf_Server()
@@ -1395,7 +1409,7 @@ endfunction
 "
 
 function! s:HandleKey(key)
-  let char   = nr2char(a:key)
+  let char = nr2char(a:key)
 
   match none
   " TODO: Make some mappings user-configurable
@@ -1450,7 +1464,7 @@ function! s:HandleKey(key)
     else
       execute 'normal!' char
     endif
-  elseif char =~# '[p]'	" scroll backward
+  elseif char =~# '[p]'		" scroll backward
     execute 'normal!' nr2char(2)
   elseif char =~# '[ ]'		" scroll forward
     execute 'normal!' nr2char(6)
@@ -1547,7 +1561,7 @@ function! s:SendLine(loop)
       let comd = 'SERVER'
     elseif comd =~# '^\%(LEAVE\)$'
       let comd = 'PART'
-    elseif comd =~# '^\%(EXIT\)$'
+    elseif comd =~# '^\%(BYE\|EXIT\|SIGNOFF\)$'
       let comd = 'QUIT'
     elseif comd =~# '^\%(NICKS\)$'
       let comd = 'NAMES'
@@ -1559,10 +1573,10 @@ function! s:SendLine(loop)
       "
       " Commands with the following form:
       "   COMMAND [MESSAGE]
-      if comd =~# '^\%(AWAY\|QUIT\|WALLOPS\)$'
+      if comd =~# '^\%(G\=\%(AWAY\|QUIT\)\|WALLOPS\)$'
 	let rx = '^:\=\(.\+\)$'
 	if args =~ rx
-	  let args = substitute(args, rx, ':\1', '')
+	  let args = s:StrMatched(args, rx, ':\1')
 	endif
       elseif comd =~# '^\%(USERHOST\|ISON\)$'
 	" User might delimit targets with commas
@@ -1584,8 +1598,7 @@ function! s:SendLine(loop)
 	  let rx = '^\(\S\+\s\+\S\+\)\s\+:\=\(.\+\)$'
 	endif
 	if strlen(rx) && args =~ rx
-	  let args = substitute(args, rx, '\1', '').' :'.
-		\substitute(args, rx, '\2', '')
+	  let args = s:StrMatched(args, rx, '\1').s:StrMatched(args, rx, ' :\2')
 	endif
       endif
     endif
@@ -1618,7 +1631,7 @@ function! s:SendLine(loop)
   endif
 
   " Don't scroll down when awaying, to keep the context
-  if comd !=# 'AWAY' && (s:IsBufChannel() || s:IsBufChat() || s:IsBufServer())
+  if comd !~# 'AWAY' && (s:IsBufChannel() || s:IsBufChat() || s:IsBufServer())
     call s:ExecuteSafe('keepjumps', 'normal! Gzb')
     redraw
   endif
@@ -1992,7 +2005,7 @@ function! s:UpdateTitleBar()
 endfunction
 
 function! s:GetStatus()
-  return exists('b:title') ? b:title  : bufname('%')
+  return exists('b:title') ? b:title : bufname('%')
 endfunction
 
 function! s:SetUserMode(umode)
@@ -2403,6 +2416,7 @@ function! s:DelChanServ()
     }
 }
 EOP
+  call s:DeleteBufNum(abuf)
 endfunction
 
 function! s:ResetChanServ(server, channel)
@@ -2505,7 +2519,8 @@ function! s:SetCurServer(server)
 {
   if (my $sref = find_server(scalar(VIM::Eval('a:server'))))
     {
-      set_curserver(fileno($sref->{'sock'}));
+      $Current_Server = $sref;
+      VIM::DoCommand("let s:server = \"$sref->{'server'}\"");
     }
 }
 EOP
@@ -2532,23 +2547,6 @@ function! s:GetCurNick()
   VIM::DoCommand('return "'.do_escape($nick).'"');
 }
 EOP
-endfunction
-
-" Quit all connected servers at once
-function! s:QuitServers()
-  perl <<EOP
-{
-  foreach my $sref (@Servers)
-    {
-      if ($sref->{'conn'} & $CS_LOGIN)
-	{
-	  set_curserver(fileno($sref->{'sock'}));
-	  VIM::DoCommand("call s:Send_QUIT('QUIT', '')");
-	}
-    }
-}
-EOP
-  call s:ResetPerlVars()
 endfunction
 
 function! s:Cmd_SERVER(server)
@@ -2736,37 +2734,6 @@ function! s:Send_ACTION(comd, args)
 EOP
 endfunction
 
-function! s:Send_GAWAY(comd, args)
-  perl <<EOP
-{
-  my $comd = 'AWAY';
-  my $away = VIM::Eval('a:args');
-  my $save_cur = $Current_Server;
-
-  foreach my $sref (@Servers)
-    {
-      if ($sref->{'conn'} & $CS_LOGIN)
-	{
-	  $Current_Server = $sref;
-
-	  if ($away)
-	    {
-	      $sref->{'away'} = $away;
-	      irc_send("%s :%s", $comd, $away);
-	    }
-	  elsif ($sref->{'away'})
-	    {
-	      $sref->{'away'} = undef;
-	      irc_send("%s", $comd);
-	    }
-	}
-    }
-
-  $Current_Server = $save_cur;
-}
-EOP
-endfunction
-
 function! s:Send_AWAY(comd, args)
   perl <<EOP
 {
@@ -2948,6 +2915,14 @@ function! s:Send_DCC(comd, args)
     }
 }
 EOP
+endfunction
+
+function! s:Send_GAWAY(comd, args)
+  call s:SendGlobally('AWAY', a:args)
+endfunction
+
+function! s:Send_GQUIT(comd, args)
+  call s:SendGlobally('QUIT', a:args)
 endfunction
 
 function! s:Send_JOIN(comd, args)
@@ -3132,6 +3107,24 @@ endfunction
 
 function! s:Send_PRIVMSG(comd, args)
   call s:SendMSG(a:comd, a:args)
+endfunction
+
+function! s:SendGlobally(comd, args)
+  perl <<EOP
+{
+  my $save_cur = $Current_Server;
+
+  foreach my $sref (@Servers)
+    {
+      if ($sref->{'conn'} & $CS_LOGIN)
+	{
+	  set_curserver(fileno($sref->{'sock'}));
+	  VIM::DoCommand('call s:Send_{a:comd}(a:comd, a:args)');
+	}
+    }
+  set_curserver(fileno($save_cur->{'sock'}));
+}
+EOP
 endfunction
 
 function! s:PreSendMSG(mesg)
@@ -3467,12 +3460,12 @@ sub set_curserver
 sub irc_add_line
 {
   my $chan  = shift;
-  my $cref  = is_channel($chan) ? find_channel($chan) : $Current_Server;
+  my $cref  = is_channel($chan) ? find_channel($chan) : undef;
   my $format= shift;
   my $peek  = 0;
   my $orgbuf= VIM::Eval("bufnr('%')");
 
-  if (is_channel($chan))
+  if (is_channel($chan) && $cref)
     {
       unless (vim_visit_channel($chan))
 	{
@@ -3480,13 +3473,10 @@ sub irc_add_line
 	    {
 	      vim_peekbuf(1);
 
-	      if ($cref)
+	      unless ($cref->{'info'} & $INFO_HASNEW)
 		{
-		  unless ($cref->{'info'} & $INFO_HASNEW)
-		    {
-		      $cref->{'info'} |= $INFO_HASNEW;
-		      $Current_Server->{'info'} |= $INFO_UPDATE;
-		    }
+		  $cref->{'info'} |= $INFO_HASNEW;
+		  $Current_Server->{'info'} |= $INFO_UPDATE;
 		}
 	    }
 	  vim_open_channel($chan);
@@ -3494,6 +3484,8 @@ sub irc_add_line
     }
   else
     {
+      $cref = $Current_Server;
+
       unless (vim_visit_server())
 	{
 	  if ($peek = vim_getvar('s:singlewin'))
@@ -3852,7 +3844,7 @@ sub do_auto_join
 	      foreach my $chans (@chans)
 		{
 		  if (($chans) = ($chans
-				    =~ /([^,]+)\@$Current_Server->{'server'}/))
+				    =~ /^(\S+)\@$Current_Server->{'server'}$/))
 		    {
 		      $chans =~ s/\|(?=[&#+!])/,/g;
 		      VIM::DoCommand('call s:Send_JOIN("JOIN",
@@ -3863,7 +3855,7 @@ sub do_auto_join
 	    }
 	  else
 	    {
-	      # Format: #chan2,#chan2@irc.foo.com
+	      # Format: #chan2,#chan2
 	      VIM::DoCommand("call s:Send_JOIN('JOIN', g:vimirc_autojoin)");
 	    }
 	}
@@ -5762,6 +5754,7 @@ sub parse_number
 	{
 	  irc_add_line($chan, "*: Topic for %s:", $chan);
 	  irc_add_line($chan, "*: %s", $topic);
+
 	  if (find_channel($chan))
 	    {
 	      $chan = do_escape($chan);
