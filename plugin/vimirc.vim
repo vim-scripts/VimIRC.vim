@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 Feb 2004
-" Last Change: Mon, 19 Apr 2004 20:52:14 +0900 (JST)
+" Last Change: Wed, 21 Apr 2004 01:58:56 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -176,8 +176,9 @@
 "   * multibyte support (done? I don't think so)
 "   * authentication (just add one line to send PASS)
 "   * flood protection
-"   * SSL
+"   * handling of channel-mode changes
 "   * IPv6
+"   * SSL
 "   * command-line completion (with tab key)
 "   * scripting (?)
 "   * nicks auto-identification (done for freenode)
@@ -209,18 +210,17 @@
 if exists('g:loaded_vimirc') || &compatible
   finish
 endif
+" Set this to zero when releasing, which I'll occasionally forget, for sure
+let s:debug = 0
+if !s:debug
+  let g:loaded_vimirc = 1
+endif
 
 let s:save_cpoptions = &cpoptions
 set cpoptions&
 
-let s:version = '0.8.2'
+let s:version = '0.8.3'
 let s:client  = 'VimIRC '.s:version
-" Set this to zero when releasing, which I'll occasionally forget, for sure
-let s:debug = 0
-
-if !s:debug
-  let g:loaded_vimirc = 1
-endif
 
 "
 " Developing functions
@@ -537,17 +537,18 @@ function! s:RC_Close()
     if &modified
       silent! write!
     endif
-    silent! close
+    silent! close!
   endif
 endfunction
 
 function! s:RC_Varname(type, name)
-  return 'vimirc_'.a:type.'_'.a:name
+  return 'vimirc_'.a:type.'_'.(a:name =~ '[^_[:alnum:]]'
+	\			? '{"'.s:EscapeQuote(a:name).'"}' : a:name)
 endfunction
 
 function! s:RC_Section(section)
   if !search('^" '.a:section, 'w')
-    if !s:IsBufEmpty() && strlen(getline('$'))
+    if strlen(getline('$'))
       call append('$', '')
     endif
     call append('$', '" '.a:section)
@@ -558,13 +559,13 @@ endfunction
 function! s:RC_Set(type, name, value)
   call s:RC_Unset(a:type, a:name)
   let varname = s:RC_Varname(a:type, a:name)
-  call append('.', 'let '.varname.' = "'.escape(a:value, '"\').'"')
+  call append('.', 'let '.varname.' = "'.s:EscapeQuote(a:value).'"')
   let g:{varname} = a:value
 endfunction
 
 function! s:RC_Unset(type, name)
   let varname = s:RC_Varname(a:type, a:name)
-  while search(varname.'\s*=', 'w')
+  while search('\m'.s:EscapeMagic(varname).'\s*=', 'w')
     delete _
   endwhile
   unlet! g:{varname}
@@ -653,15 +654,11 @@ function! s:GenBufName_Command(server, channel)
 endfunction
 
 function! s:GenBufName_Chat(server, nick)
-  return s:bufname_chat.s:SecureBufName(a:nick).'@'.a:server
-endfunction
-
-function! s:SecureBufName(bufname)
-  return escape(a:bufname, '#')
+  return s:bufname_chat.s:EscapeFName(a:nick).'@'.a:server
 endfunction
 
 function! s:SecureChannel(channel)
-  return s:SecureBufName(tolower(a:channel))
+  return s:EscapeFName(tolower(a:channel))
 endfunction
 
 function! s:IsBufIRC(...)
@@ -728,20 +725,22 @@ function! s:VisitBuf_Info()
   return (s:SelectWindow(s:GetBufNum_Info()) >= 0)
 endfunction
 
-function! s:VisitBuf_Server()
-  return (s:SelectWindow(s:GetBufNum_Server()) >= 0)
+function! s:VisitBuf_Server(...)
+  return (s:SelectWindow(s:GetBufNum_Server(a:0 ? a:1 : s:server)) >= 0)
 endfunction
 
-function! s:VisitBuf_List()
-  return (s:SelectWindow(s:GetBufNum_List()) >= 0)
+function! s:VisitBuf_List(...)
+  return (s:SelectWindow(s:GetBufNum_List(a:0 ? a:1 : s:server)) >= 0)
 endfunction
 
-function! s:VisitBuf_Channel(channel)
-  return (s:SelectWindow(s:GetBufNum_Channel(a:channel)) >= 0)
+function! s:VisitBuf_Channel(channel, ...)
+  return (s:SelectWindow(s:GetBufNum_Channel(a:channel,
+	\					(a:0 ? a:1 : s:server))) >= 0)
 endfunction
 
-function! s:VisitBuf_Nicks(channel)
-  return (s:SelectWindow(s:GetBufNum_Nicks(a:channel)) >= 0)
+function! s:VisitBuf_Nicks(channel, ...)
+  return (s:SelectWindow(s:GetBufNum_Nicks(a:channel,
+	\					(a:0 ? a:1 : s:server))) >= 0)
 endfunction
 
 function! s:VisitBuf_Chat(nick, server)
@@ -823,18 +822,20 @@ function! s:PostOpenBuf_Chat()
 endfunction
 
 function! s:OpenBuf(comd, ...)
-  " Avoid "not enough room" error
-  let winminheight= &winminheight
-  let winminwidth = &winminwidth
+  try
+    " Avoid "not enough room" error
+    let winminheight= &winminheight
+    let winminwidth = &winminwidth
+    set winminheight=0 winminwidth=0
+    let v:errmsg = ''
 
-  set winminheight=0 winminwidth=0
-  setlocal noswapfile modifiable
-  let v:errmsg = ''
-
-  silent! execute a:comd.(a:0 && strlen(a:1) ? ' '.a:1 : '')
-
-  let &winminheight = winminheight
-  let &winminwidth  = winminwidth
+    silent! execute a:comd.(a:0 && strlen(a:1) ? ' '.a:1 : '')
+    setlocal noswapfile modifiable
+  catch /^Vim:Interrupt$/
+  finally
+    let &winminheight = winminheight
+    let &winminwidth  = winminwidth
+  endtry
   return !strlen(v:errmsg)
 endfunction
 
@@ -933,7 +934,7 @@ function! s:OpenBuf_Channel(channel)
 endfunction
 
 function! s:OpenBuf_Nicks(channel, ...)
-  if !s:VisitBuf_Channel(a:channel)
+  if !s:VisitBuf_Channel(a:channel, (a:0 ? a:1 : s:server))
     return 0
   endif
 
@@ -1518,30 +1519,25 @@ function! s:SendLine(loop)
   call s:SetCurServer(b:server)
   call s:SetCurChannel(b:channel)
 
-  let line = s:StrTrim(getline('.'))
-  let expd = s:ExpandAlias(line)
-  if strlen(expd)
-    let line = expd
-  endif
-
+  let line = s:ExpandAlias(s:StrTrim(getline('.')))
   let comd = ''
   let args = ''
 
   let rx = '^/\(\S\+\)\%(\s\+\(.\+\)\)\=$'
   if line =~ rx
-    " TODO: Allow abbreviated forms of commands (done?)
     let comd = toupper(s:StrMatched(line, rx, '\1'))
     let args = s:StrMatched(line, rx, '\2')
 
-    " Accept aliases
+    " Further expand aliases
     if comd =~# '^\%(MSG\|QUERY\)$'
       if comd ==# 'QUERY'
 	" Just entering/quitting query mode, not sending.
 	if strlen(args)
-	  return s:StartChat(args)
+	  call s:StartChat(args)
 	else
 	  call s:CloseBuf_Chat(b:query, s:server)
 	endif
+	return
       endif
       let comd = 'PRIVMSG'
     elseif comd =~# '^\%(ME\)$'
@@ -1822,22 +1818,28 @@ function! s:ExpandAlias(line)
 endfunction
 
 function! s:Cmd_ALIAS(line)
-  let rx = '^/\(\S\+\)\s\+\(.\+\)$'
+  let rx = '^/\=\(\S\+\)\s\+/\=\(.\+\)$'
   if a:line =~ rx
     if s:RC_Open(1)
+      let alias = toupper(s:StrMatched(a:line, rx, '\1'))
+      let comd	= s:StrMatched(a:line, rx, '/\2')
       call s:RC_Section('Aliases')
-      call s:RC_Set('alias', toupper(s:StrMatched(a:line, rx, '\1')),
-	    \					s:StrMatched(a:line, rx, '\2'))
-      call s:RC_Close()
+      call s:RC_Set('alias', alias, comd)
+    else
+      call s:PromptKey('Failed in registering alias', 'Error')
     endif
+    call s:RC_Close()
+  else
+    call s:PromptKey('Syntax: /ALIAS alias command (with arguments)',
+	  \							'WarningMsg')
   endif
 endfunction
 
 function! s:Cmd_UNALIAS(alias)
   if s:RC_Open(0)
     call s:RC_Unset('alias', toupper(substitute(a:alias, '^/', '', '')))
-    call s:RC_Close()
   endif
+  call s:RC_Close()
 endfunction
 
 "
@@ -1925,19 +1927,14 @@ function! s:LogBuffer(bufnum)
   if s:log && s:MakeDir(s:logdir) && bufloaded(a:bufnum)
 	\ && (s:SelectWindow(a:bufnum) >= 0
 	\     || s:OpenBuf('split', '+'.a:bufnum.'buffer'))
-	\ && !s:IsBufEmpty()
+	\ && !(s:IsBufEmpty()
+	\     || (exists('b:lastsave') && b:lastsave >= line('$')))
     let save_cpoptions = &cpoptions
     set cpoptions-=A
 
-    let range = '%'
-    if exists('b:lastsave')
-      if b:lastsave >= line('$')
-	return
-      endif
-      let range = (b:lastsave + 1).',$'
-    endif
-
+    let range = ((exists('b:lastsave') ? b:lastsave : 0) + 1).',$'
     let logfile = s:logdir.'/'.s:GenFName_Log()
+
     " If the file is loaded in another buffer, unload it
     if bufloaded(logfile) && bufnr(logfile) != bufnr('%')
       execute 'bunload!' logfile
@@ -1956,7 +1953,7 @@ endfunction
 function! s:GenFName_Log()
   " I'm prepending your nick to avoid corrupted data in case you're running
   " multiple instances.  No locking.
-  return s:SecureBufName(s:GetCurNick().'@'.b:server.(exists('b:channel')
+  return s:EscapeFName(s:GetCurNick().'@'.b:server.(exists('b:channel')
 	\					      ? '.'.b:channel
 	\					      : ''))
 endfunction
@@ -2037,6 +2034,18 @@ endfunction
 " Misc. utility functions
 "
 
+function! s:EscapeFName(str)
+  return escape(a:str, '%#')
+endfunction
+
+function! s:EscapeMagic(str)
+  return escape(a:str, '$*.\^~')
+endfunction
+
+function! s:EscapeQuote(str)
+  return escape(a:str, '"\')
+endfunction
+
 function! s:EchoHL(mesg, hlname)
   try
     execute 'echohl' a:hlname
@@ -2047,7 +2056,7 @@ function! s:EchoHL(mesg, hlname)
 endfunction
 
 function! s:SearchLine(line)
-  return strlen(a:line) ? search('\m^'.escape(a:line, '$*.\^~').'$', 'w') : 0
+  return strlen(a:line) ? search('\m^'.s:EscapeMagic(a:line).'$', 'w') : 0
 endfunction
 
 function! s:GetEnv(var)
@@ -3216,7 +3225,6 @@ our ($RS, $WS);		# IO::Select object
 
 our $From_Server;	# simple string value of the last sender's name@host
 
-#our %OPTS;
 our ($ENC_VIM, $ENC_IRC);
 
 # Connection state flags
@@ -3290,7 +3298,6 @@ sub close_server
 
   if ($sref->{'conn'} & $CS_QUIT)
     {
-      #$sref->{'chans'} = [];
       $sref->{'timers'} = [];
     }
 
@@ -3837,14 +3844,28 @@ sub do_auto_join
 {
   if (my $autojoin = vim_getvar('g:vimirc_autojoin'))
     {
-      if (my ($chans) = ($autojoin =~ /([^,]+)\@$Current_Server->{'server'}/))
+      if (my @chans = split(/,/, $autojoin))
 	{
-	  $chans =~ s/\|(?=[&#+!])/,/g;
-	  VIM::DoCommand('call s:Send_JOIN("JOIN", "'.do_escape($chans).'")');
-	}
-      else
-	{
-	  VIM::DoCommand("call s:Send_JOIN('JOIN', g:vimirc_autojoin)");
+	  if (index($chans[0], '@') > 0)
+	    {
+	      # Format: #chan1@irc.foo.com,$chan2|$chan3@irc.bar.com
+	      foreach my $chans (@chans)
+		{
+		  if (($chans) = ($chans
+				    =~ /([^,]+)\@$Current_Server->{'server'}/))
+		    {
+		      $chans =~ s/\|(?=[&#+!])/,/g;
+		      VIM::DoCommand('call s:Send_JOIN("JOIN",
+			    \			  "'.do_escape($chans).'")');
+		      last;
+		    }
+		}
+	    }
+	  else
+	    {
+	      # Format: #chan2,#chan2@irc.foo.com
+	      VIM::DoCommand("call s:Send_JOIN('JOIN', g:vimirc_autojoin)");
+	    }
 	}
     }
 }
