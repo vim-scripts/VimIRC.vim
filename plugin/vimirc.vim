@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 February 2004
-" Last Change: Mon, 22 Mar 2004 17:57:11 +0900 (JST)
+" Last Change: Mon, 22 Mar 2004 21:24:30 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -142,7 +142,7 @@ endif
 let s:save_cpoptions = &cpoptions
 set cpoptions&
 
-let s:version = '0.6'
+let s:version = '0.6.1'
 let s:client = 'VimIRC '.s:version
 " Set this to zero when releasing, which I'll occasionally forget, for sure
 let s:debug = 0
@@ -2320,6 +2320,7 @@ sub irc_add_line
 					    scalar(VIM::Eval('s:GetTime(1)')),
 					    $cname,
 					    @_));
+
   unless ($Current_Server->{'away'})
     {
       # Shouldn't scroll down nor beep while you're away
@@ -3571,13 +3572,13 @@ sub rename_nick
 sub list_nicks
 {
   my $chan = shift;
+  # Use bufnum since window number can change
+  my $bnum = VIM::Eval("bufnr('%')");
 
   if (VIM::Eval("s:VisitChannel(\"$chan\")"))
     {
       my $nref = get_nicks($chan);
       my @nicks= map { get_nickprefix($nref->{$_}).$_ } keys(%{$nref});
-      # Use bufnum since window number can change
-      my $bnum = VIM::Eval("bufnr('%')");
       VIM::DoCommand("call s:OpenBuf_Names(\"$chan\")");
       VIM::DoCommand('call s:PreBufModify()');
       $curbuf->Delete(1, $curbuf->Count());
