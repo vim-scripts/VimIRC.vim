@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 Feb 2004
-" Last Change: Mon, 28 Feb 2005 22:41:03 +0900 (JST)
+" Last Change: Tue, 01 Mar 2005 23:54:25 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -288,7 +288,7 @@
 if exists('g:loaded_vimirc') || &compatible
   finish
 endif
-let s:version = '0.9.7'
+let s:version = '0.9.8'
 
 let s:debug = (s:version =~# '-devel$')
 if !s:debug
@@ -640,7 +640,7 @@ function! s:QuitVimIRC()
       throw 'IMGONNAQUIT'
     endif
   finally
-    call s:ScreenClear()
+    call s:ScreenClear(1)
     call s:PromptKey(' Thanks for flying VimIRC', 'Title')
     call s:ResetSysVars()
   endtry
@@ -649,16 +649,16 @@ endfunction
 function! s:QuitWhat(severe)
   if a:severe || !strlen(s:GetVimVar('b:channel'))
     " Don't confirm when quitting with "Q"
-    return (a:severe || s:GetConf_YN('Really quit VimIRC?'))
+    return (a:severe || s:GetConf_YN('Really quit VimIRC'))
 	  \ ? s:QuitVimIRC() : 0
   endif
 
   if s:IsNick(b:channel)
-    if s:GetConf_YN('Really quit chat with '.b:channel.'?')
+    if s:GetConf_YN('Really quit chat with '.b:channel)
       call s:QuitChat(b:channel)
     endif
   else
-    if s:GetConf_YN('Really close channel '.b:channel.'?')
+    if s:GetConf_YN('Really close channel '.b:channel)
       call s:Send_PART('PART', b:channel)
     endif
   endif
@@ -673,8 +673,10 @@ function! s:MainLoop()
 
   try
     let s:inside_loop = 1
-    " Clearing the vim command line
+    " Clear the vim command line
     echo ''
+    " Show line-cursor, so the user can easily recognize that she is online
+    call s:HiliteLine('.')
 
     while 1
       call s:HandleKey(getchar(0))
@@ -1787,7 +1789,7 @@ function! s:ResizeWin(restore)
 
   if a:restore
     call s:BufVisit(bufnum)
-    call s:ScreenClear()
+    call s:ScreenClear(1)
   endif
 endfunction
 
@@ -1831,7 +1833,7 @@ function! s:ToggleBuf_Info(open)
 
   call s:ResizeWin(0)
   call s:BufVisit(bufnum)
-  call s:ScreenClear()
+  call s:ScreenClear(1)
 endfunction
 
 "
@@ -1839,28 +1841,35 @@ endfunction
 "
 
 function! s:HandleKey(key)
-  if ''.a:key == '0'
+  if !a:key
     return
   endif
 
-  let char = nr2char(a:key)
-  call s:HiliteClear()
+  try
+    call s:DoHandleKey(a:key)
+  catch /:E\%(35\|486\|492\):/
+    " Catch some familiar errors
+    call s:EchoError(s:StrDivide(v:exception, 0))
+  catch /:E132:/
+  finally
+    call s:SetLastActive()
+  endtry
+endfunction
 
-  " TODO: Make some mappings user-configurable
+function! s:DoHandleKey(key)
+  let char = nr2char(a:key)
+  " TODO: User-configurable maps
   " Place movement commands earlier, to get quick response
   if char =~# '[ p]'	" scroll forward/backward
     call s:DoNormal(nr2char(2 * (char == ' ' ? 3 : 1)))
-  elseif char == "\<C-N>" || char == "\<C-P>"
-    call s:WalkThruChanServ(char == "\<C-N>")
-  elseif (  char == "\<C-B>" || char == "\<C-F>"
+  elseif (  char =~# '[jkhlwbeWBE^$0*#nN+\-;GHLM]'
+	\|| char == "\<C-B>" || char == "\<C-F>"
 	\|| char == "\<C-D>" || char == "\<C-U>"
 	\|| char == "\<C-E>" || char == "\<C-Y>"
 	\|| char == "\<C-O>" || char == "\<C-^>"
-	\|| char =~# '[-#$*+0;BEGHLMNW^behjklnw]')
+	\|| char == "\<C-J>")
     " One char commands
     call s:DoNormal(char)
-  elseif char == "\t"
-    call s:DoNormal("1\<C-I>")
   elseif char =~# '[`FTfgmtz]'
     " Commands which take a second char
     call s:DoNormal(char.nr2char(getchar()))
@@ -1882,6 +1891,10 @@ function! s:HandleKey(key)
     else
       call s:DoNormal(comd)
     endif
+  elseif char == "\<C-N>" || char == "\<C-P>"
+    call s:WalkThruChanServ(char == "\<C-N>")
+  elseif char == "\t"
+    call s:DoNormal("1\<C-I>")
   elseif char == "\<C-L>"
     call s:ResizeWin(1)
   elseif char =~# '[:]'
@@ -1896,6 +1909,7 @@ function! s:HandleKey(key)
       call s:Sort{char ==# 'o' ? 'Select' : 'Reverse'}()
     endif
   elseif char =~# '[AIOaio]'
+    call s:HiliteClear()
     if s:IsBufCommand()
       " Position cursor at an appropriate place
       if char ==# 'I'
@@ -1921,20 +1935,17 @@ function! s:HandleKey(key)
     else
       call s:StartWeb()
     endif
-  elseif char =~? '[q]'
+  elseif char ==? 'q'
     call s:QuitWhat(char ==# 'Q')
   endif
 
+  call s:Hilite{s:IsBufInfo() ? 'Line' : 'Column'}('.')
   " Speed up jjjjjjjjjjjjj like inputs
   if getchar(0) == a:key
-    return s:HandleKey(a:key)
+    " Discard excessive keytypes (Chalice)
+    while getchar(0)|endwhile
+    return s:DoHandleKey(a:key)
   endif
-  " Discard excessive keytypes (Chalice)
-  while getchar(0)|endwhile
-
-  call s:SetLastActive()
-  call s:Hilite{s:IsBufInfo() ? 'Line' : 'Column'}('.')
-  redraw
 endfunction
 
 " Make use of the key input for the 'Hit any key to continue' prompt
@@ -2044,12 +2055,12 @@ function! s:SelectNickAction() range
 
   if !(choice % 2) && number > 1
     " TODO: Do it.
-    return s:EchoHL('Sorry, you cannot do it with mulitple persons '.
-		   \'at the same time', 'ErrorMsg')
+    return s:EchoError('Sorry, you cannot do it with mulitple persons at '.
+		      \'the same time')
   endif
 
   if (choice == 2 || choice == 3) && !s:IsChannel(b:channel)
-    return s:EchoHL('You cannot do it unless you are on a channel.', 'ErrorMsg')
+    return s:EchoError('You cannot do it unless you are on a channel.')
   endif
 
   " Set the current server appropriately, so the command will be sent to the
@@ -2075,7 +2086,6 @@ function! s:SelectNickAction() range
     unlet s:channel
   endtry
 
-  call s:HiliteLine('.')
   call s:MainLoop()
 endfunction
 
@@ -2530,7 +2540,7 @@ function! s:StartServer(servers)
 endfunction
 
 function! s:StartChannel(channel)
-  if s:GetConf_YN('Join channel '.a:channel.'?')
+  if s:GetConf_YN('Join channel '.a:channel)
     call s:SetCurServer(b:server)
     call s:Send_JOIN('JOIN', a:channel)
   endif
@@ -2851,6 +2861,11 @@ function! s:EchoHL(mesg, hlname)
   endtry
 endfunction
 
+function! s:EchoError(mesg)
+  call s:EchoHL(a:mesg, 'ErrorMsg')
+  call s:Beep(1)
+endfunction
+
 function! s:Execute(comd, ...)
   let silent = (a:0 && a:1)
   let retval = 0
@@ -2951,28 +2966,28 @@ endfunction
 " Interactive functions
 
 function! s:GetConf_YN(mesg)
-  call s:EchoHL(' '.a:mesg.' (y/[n]): ', 'Question')
+  call s:EchoHL(' '.a:mesg.'? (y/[n]): ', 'Question')
   let char = getchar()
-  call s:ScreenClear()
+  call s:ScreenClear(0)
   return (nr2char(char) ==? 'y')
 endfunction
 
 function! s:Input(mesg, ...)
   let input = s:StrCompress(input(a:mesg.': ', (a:0 ? a:1 : '')))
-  call s:ScreenClear()
+  call s:ScreenClear(0)
   return input
 endfunction
 
 function! s:InputS(mesg)
   let input = s:StrCompress(inputsecret(a:mesg.': '))
-  call s:ScreenClear()
+  call s:ScreenClear(0)
   return input
 endfunction
 
 function! s:PromptKey(mesg, ...)
   call s:EchoHL(a:mesg, (a:0 ? a:1 : 'MoreMsg'))
   let key = getchar()
-  call s:ScreenClear()
+  call s:ScreenClear(0)
   return key
 endfunction
 
@@ -2986,7 +3001,7 @@ function! s:SearchWord(comd)
   if strlen(word)
     let @/ = word
   endif
-  call s:DoNormal((a:comd == '/' ? 'n' : 'N'), 1)
+  call s:DoNormal((a:comd == '/' ? 'n' : 'N'))
 endfunction
 
 " String manipulation
@@ -3186,8 +3201,9 @@ function! s:WinVisit(winnum)
   return (a:winnum == winnr())
 endfunction
 
-function! s:ScreenClear()
-  echo ''|redraw!
+function! s:ScreenClear(all)
+  echon "\r"
+  execute 'redraw'.(a:all ? '!' : '')
 endfunction
 
 function! s:ScreenBottom()
@@ -3233,11 +3249,13 @@ endfunction
 
 function! s:HiliteColumn(bogus, ...)
   call s:ExecuteSilent('match '.s:GetHlGroup(a:0 ? a:1 : '').' /\%#\S*/')
+  call s:ScreenClear(0)
 endfunction
 
 function! s:HiliteLine(lnum, ...)
   call s:ExecuteSilent('match '.s:GetHlGroup(a:0 ? a:1 : '').
 		      \' /^.*\%'.(a:lnum ? a:lnum : line(a:lnum)).'l.*$/')
+  call s:ScreenClear(0)
 endfunction
 
 function! s:HiliteURL(url)
@@ -3375,7 +3393,6 @@ function! s:PostLoadList(updated)
 
   if s:VisitBuf_List()
     call s:BufTrim()
-    call s:HiliteLine('.')
   endif
 
   perl <<EOP
@@ -3661,8 +3678,6 @@ function! s:Cmd_SERVER(server)
   call s:OpenBuf_Server(port)
   call s:CloseWin_DeadServer()
   $
-  call s:HiliteLine('.')
-  call s:ScreenClear()
 
   perl <<EOP
 {
@@ -4539,7 +4554,6 @@ sub post_put_line
     }
 
   vim_bufvisit($orgbuf);
-  vim_redraw();
 }
 
 sub irc_chan_line
@@ -5221,7 +5235,7 @@ sub process_dcc_reply
 sub dcc_ask_accept_offer
 {
   my $dcc  = shift;
-  my $mesg = sprintf("%s is offering DCC %s to you.  Accept it?",
+  my $mesg = sprintf("%s is offering DCC %s to you.  Accept it",
 		      $dcc->{'nick'},
 		      (($dcc->{'flags'} & $DCC_TYPE) == $DCC_FILERECV
 			? 'SEND'
@@ -7073,7 +7087,7 @@ sub p_invite
       # Ask user to join
       vim_beep(2);
 
-      if (vim_getconf("$from invites you to join $chan. Accept it?"))
+      if (vim_getconf("$from invites you to join $chan. Accept it"))
 	{
 	  VIM::DoCommand('call s:Send_JOIN("JOIN", "'.do_escape($chan).'")');
 	}
