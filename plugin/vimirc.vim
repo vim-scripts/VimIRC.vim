@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 February 2004
-" Last Change: Tue, 23 Mar 2004 23:57:24 +0900 (JST)
+" Last Change: Wed, 24 Mar 2004 17:22:34 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -20,9 +20,10 @@
 "   A Drawback:
 "     VimIRC achieves real-time message reception by implementing its own main
 "     loop.  Therefore, while you are out of it, VimIRC has no way to get new
-"     messages.  So my recommendation is, use a shortcut which creates
-"     a VimIRC-dedicated instance of Vim, where you do not initiate normal
-"     editing sessions.
+"     messages.
+"
+"     So my recommendation is, use a shortcut which creates a VimIRC-dedicated
+"     instance of Vim, where you do not initiate normal editing sessions.
 "
 " Requirements:
 "   * Vim 6.2 or later with perl interface enabled
@@ -48,8 +49,8 @@
 "     let g:vimirc_dccdir	="where files are downloaded"
 "				  (default: ~/.vimirc/dcc)
 "     let g:vimirc_dccport	=port-number to watch at when you set up
-"				  a dcc server.  necessary to set if you are
-"				  behind firewall or something.
+"				  a dcc server.  maybe necessary to set if you
+"				  are behind firewall or something.
 "
 "   Runtime Options:
 "     You can pass following options to the command :VimIRC, overriding the
@@ -71,16 +72,16 @@
 "   variables listed above.
 "
 " Usage:
-"   Normal mode:  This is a pseudo normal mode.  Just try several normal-mode
-"		  commands as usual.
 "
-"		  Type "i" or "I" to enter the `command mode' described
-"		  below, just as you do in vim to go insert mode.
+"   Normal mode:  This is a pseudo normal mode.  Try your favorite Vim normal
+"		  mode commands as usual.
 "
-"		  Type <Ctrl-C> to get out of control and freely move around
-"		  or do ex commands.
+"		  Typing "i" or "I" will let you in the `command mode'
+"		  described below, just as you do in Vim to go insert mode.
 "
-"		  Hit <Space> to re-enter the normal (online) mode.
+"		  Hit <Ctrl-C> to get out of control and freely move around
+"		  or do ex commands.  Hit <Space> to re-enter the normal
+"		  (online) mode again.
 "
 "		  Special cases:
 "
@@ -144,7 +145,7 @@ endif
 let s:save_cpoptions = &cpoptions
 set cpoptions&
 
-let s:version = '0.6.2'
+let s:version = '0.6.3'
 let s:client = 'VimIRC '.s:version
 " Set this to zero when releasing, which I'll occasionally forget, for sure
 let s:debug = 0
@@ -244,7 +245,7 @@ function! s:InitVars()
   let s:bufname_channel = s:bufname_prefix.'CHANNEL_'
   let s:bufname_names	= s:bufname_prefix.'NAMES_'
   let s:bufname_command = s:bufname_prefix.'COMMAND_'
-  let s:bufname_chat	= s:bufname_prefix.'DCCCHAT_'
+  let s:bufname_chat	= s:bufname_prefix.'CHAT_'
 
   " User options below
 
@@ -468,19 +469,19 @@ function! s:GenBufName_List(server)
 endfunction
 
 function! s:GenBufName_Channel(server, channel)
-  return s:bufname_channel.a:server.s:SecureChannel(a:channel)
+  return s:bufname_channel.s:SecureChannel(a:channel).'@'.a:server
 endfunction
 
 function! s:GenBufName_Names(server, channel)
-  return s:bufname_names.a:server.s:SecureChannel(a:channel)
+  return s:bufname_names.s:SecureChannel(a:channel).'@'.a:server
 endfunction
 
 function! s:GenBufName_Command(server, channel)
-  return s:bufname_command.a:server.s:SecureChannel(a:channel)
+  return s:bufname_command.s:SecureChannel(a:channel).'@'.a:server
 endfunction
 
 function! s:GenBufName_Chat(nick, server)
-  return s:bufname_chat.a:server.s:SecureBufName('='.a:nick)
+  return s:bufname_chat.s:SecureBufName(a:nick).'@'.a:server
 endfunction
 
 function! s:SecureBufName(bufname)
@@ -517,6 +518,10 @@ endfunction
 
 function! s:IsBufChat(...)
   return !match(bufname(a:0 && a:1 ? a:1 : '%'), s:bufname_chat)
+endfunction
+
+function! s:IsChannel(chan)
+  return !(match(a:chan, '[&#+!]'))
 endfunction
 
 function! s:VisitServer()
@@ -626,10 +631,10 @@ function! s:OpenBuf_Command()
   endif
 
   let channel = s:GetVimVar('b:channel')
-  let dccchat = !(match(channel, '='))
+  let chattin = !s:IsChannel(channel)
   let bufnum  = s:GetBufNum_Command(channel)
 
-  if !(dccchat || bufnum == bufnr('%')) && strlen(channel)
+  if !(chattin || bufnum == bufnr('%')) && strlen(channel)
     let query = getbufvar(bufnum, 'query')
     " Meaning, user hit i/I in a channel window, but the corresponding command
     " window was in use as a query window
@@ -644,7 +649,7 @@ function! s:OpenBuf_Command()
     let comd = 'botright 1split'
   else
     let comd = 'belowright 1split'
-    if !dccchat
+    if !chattin
       call s:SelectWindow(strlen(channel) ? s:GetBufNum_Channel(channel)
 	    \				  : s:GetBufNum_Server())
     endif
@@ -658,7 +663,7 @@ function! s:OpenBuf_Command()
     let bufname = s:GenBufName_Command(s:server, channel)
     call s:OpenBuf(comd, bufname)
     call s:InitBuf_Command(bufname, channel)
-    if dccchat
+    if chattin
       let b:query = channel
     endif
   endif
@@ -829,9 +834,9 @@ endfunction
 function! s:InitBuf_Chat(bufname, nick, server)
   " NOTE: a:server is the name of the IRC server, not the peer's
   let b:server	= a:server
-  let b:channel = '='.a:nick
-  let b:title	= '  Chatting with '.b:channel
-  call setline(1, s:GetTime(1).' *: Now chatting with '.b:channel)
+  let b:channel = a:nick
+  let b:title	= '  Chatting with '.a:nick
+  call setline(1, s:GetTime(1).' *: Now chatting with '.a:nick)
   call s:DoSettings()
   call s:DoHilite_Chat()
   call s:SetBufNum(a:bufname, bufnr('%'))
@@ -919,7 +924,7 @@ function! s:CloseChat(nick, server)
   let save_server = s:server
   let s:server = a:server
 
-  let bufnum = s:GetBufNum_Command('='.a:nick)
+  let bufnum = s:GetBufNum_Command(a:nick)
   if bufnum >= 0
     let v:errmsg = ''
     while s:SelectWindow(bufnum) >= 0
@@ -1082,6 +1087,7 @@ function! s:SendingCommand(loop)
 	    call s:InitiateQuery(args)
 	    return
 	  else
+	    call s:CloseChat(b:query, s:server)
 	    let b:query = ''
 	  endif
 	endif
@@ -1163,26 +1169,32 @@ function! s:SendingCommand(loop)
 endfunction
 
 function! s:JoinChannel()
-  let chan = matchstr(getline('.'), '^[&#+!]\S\+')
-  if strlen(chan) && s:GetConf_YN("Join the channel ".chan."?")
+  let chan = matchstr(getline('.'), '^\S\+')
+  if s:IsChannel(chan) && s:GetConf_YN("Join the channel ".chan."?")
     call s:SetCurrentServer(b:server)
-    call s:Send_JOIN('JOIN', chan)  " first parameter can be any string i think
+    call s:Send_JOIN('JOIN', chan)
   endif
 endfunction
 
 function! s:InitiateQuery(nick)
   " TODO: Open up a separate window as with DCC CHAT?
-  if !s:IsBufCommand()
+  if 1
+    call s:CloseCommand(0)
+    call s:OpenBuf_Chat(a:nick, s:server)
     call s:OpenBuf_Command()
   else
-    if strlen(getline('$'))
-      call append('$', '')
+    if !s:IsBufCommand()
+      call s:OpenBuf_Command()
+    else
+      if strlen(getline('$'))
+	call append('$', '')
+      endif
+      $
+      startinsert
     endif
-    $
-    startinsert
+    let b:query = a:nick
+    call s:SetCommandMode(b:channel)
   endif
-  let b:query = a:nick
-  call s:SetCommandMode(b:channel)
 endfunction
 
 function! s:SelectNickCmd(loop) range
@@ -1694,15 +1706,18 @@ function! s:Send_ACTION(comd, args)
 	{
 	  my $nick = $Current_Server->{'nick'};
 
-	  ctcp_send(1, $chan, $mesg);
+	  ctcp_send(1, $chan, "%s %s", scalar(VIM::Eval('a:comd')), $mesg);
 
 	  if (is_channel($chan))
 	    {
 	      my $nref = get_nicks($chan);
-	      $nick = get_nickprefix($nref->{$nick}).$nick;
+	      irc_add_line($chan, "*%s%s*: %s",
+				  get_nickprefix($nref->{$nick}), $nick, $mesg);
 	    }
-
-	  irc_add_line($chan, "*%s*: %s", $nick, $mesg);
+	  else
+	    {
+	      irc_chat_line($chan, "*%s*: %s", $nick, $mesg);
+	    }
 	}
     }
 }
@@ -1830,7 +1845,7 @@ function! s:Send_DCC(comd, args)
 	    }
 	  if ($dcc)
 	    {
-	      VIM::DoCommand("call s:OpenBuf_Chat(\"$nick\",
+	      VIM::DoCommand("call s:OpenBuf_Chat(\"=$nick\",
 		    \			\"$dcc->{'iserver'}->{'server'}\")");
 	    }
 	}
@@ -1937,11 +1952,9 @@ function! s:Send_PING(comd, args)
 
   perl <<EOP
 {
-  my $comd = VIM::Eval('a:comd');
-  my $args = VIM::Eval('a:args');
-  my $time = VIM::Eval('localtime()');
-
-  ctcp_send(1, $args, "%s %d", $comd, $time);
+  ctcp_send(1, scalar(VIM::Eval('a:args')), "%s %d",
+					    scalar(VIM::Eval('a:comd')),
+					    scalar(VIM::Eval('localtime()')));
 }
 EOP
 endfunction
@@ -2002,20 +2015,28 @@ function! s:SendMessage(comd, args)
 	    {
 	      $comd = 'PRIVMSG';
 	    }
+	  $priv = ($comd eq 'PRIVMSG');
+
 	  irc_send("%s %s :%s", $comd, $chan, $mesg);
 
 	  if (is_channel($chan))
 	    {
 	      my $nref = get_nicks($chan);
-	      $nick = get_nickprefix($nref->{$nick}).$nick;
+	      irc_add_line($chan, "%s%s%s%s: %s",
+				  ($priv ? '<' : '['),
+				  get_nickprefix($nref->{'nick'}),
+				  $nick,
+				  ($priv ? '>' : ']'),
+				  $mesg);
 	    }
-
-	  $priv = ($comd eq 'PRIVMSG');
-	  irc_add_line($chan, "%s%s%s: %s",
-			      ($priv ? '<' : '['),
-			      $nick,
-			      ($priv ? '>' : ']'),
-			      $mesg);
+	  else
+	    {
+	      irc_chat_line($chan, "%s%s%s: %s",
+				    ($priv ? '<' : '['),
+				    $nick,
+				    ($priv ? '>' : ']'),
+				    $mesg);
+	    }
 	}
     }
 }
@@ -2303,12 +2324,11 @@ sub set_curserver
 
 sub irc_add_line
 {
-  my $chan  = shift;
-  # TODO: Use sprintf?
-  my $format= shift;
+  my $chan = shift;
+  my $fmt  = shift;
   my $cname;
   # Remember the current window
-  my $wnum  = VIM::Eval('winnr()');
+  my $wnum = VIM::Eval('winnr()');
 
   # Data for hidden channels might be discarded, which is not desirable
   unless (is_channel($chan) && VIM::Eval("s:VisitChannel(\"$chan\")"))
@@ -2325,11 +2345,10 @@ sub irc_add_line
 
   VIM::DoCommand('call s:PreBufModify()');
   # I think Vim's strftime is much faster than perl's equivalent
-  $curbuf->Append($curbuf->Count(), sprintf("%s %s$format",
+  $curbuf->Append($curbuf->Count(), sprintf("%s %s$fmt",
 					    scalar(VIM::Eval('s:GetTime(1)')),
 					    $cname,
 					    @_));
-
   unless ($Current_Server->{'away'})
     {
       # Shouldn't scroll down nor beep while you're away
@@ -2337,6 +2356,29 @@ sub irc_add_line
     }
   VIM::DoCommand('call s:PostBufModify()');
   VIM::DoCommand("${wnum}wincmd w");
+  VIM::DoCommand('redraw');
+}
+
+sub irc_chat_line
+{
+  my $nick = shift;
+  my $fmt  = shift;
+  my $bnum = VIM::Eval("bufnr('%')");
+
+  VIM::DoCommand("call s:OpenBuf_Chat(\"$nick\",
+	\				    \"$Current_Server->{'server'}\")");
+  VIM::DoCommand('call s:PreBufModify()');
+
+  $curbuf->Append($curbuf->Count(), sprintf("%s $fmt",
+					    scalar(VIM::Eval('s:GetTime(1)')),
+					    @_));
+  unless ($Current_Server->{'away'})
+    {
+      # Shouldn't scroll down nor beep while you're away
+      VIM::DoCommand('call s:NotifyNewEntry()');
+    }
+  VIM::DoCommand('call s:PostBufModify()');
+  VIM::DoCommand("call s:SelectWindow($bnum)");
   VIM::DoCommand('redraw');
 }
 
@@ -2513,7 +2555,7 @@ sub ctcp_send
   #   Dated Fri, 12 Aug 94 00:21:54 edt
   #   By ben@gnu.ai.mit.edu et al.
   my $query = shift;
-  my $target = shift;
+  my $target= shift;
   irc_send("%s %s :\x01%s\x01", ($query ? 'PRIVMSG' : 'NOTICE'), $target,
 							  sprintf(shift, @_));
 }
@@ -2536,11 +2578,22 @@ sub process_ctcp_query
 	    }
 	  elsif ($comd eq 'ACTION')
 	    {
-	      irc_add_line($chan, "*%s%s*: %s", $pref, $from, $args);
+	      if (is_channel($chan))
+		{
+		  irc_add_line($chan, "*%s%s*: %s", $pref, $from, $args);
+		}
+	      else
+		{
+		  if (is_me($chan))
+		    {
+		      irc_chat_line($from, "*%s*: %s", $from, $args);
+		    }
+		}
 	    }
 	  else
 	    {
 	      irc_add_line($chan, "?%s%s?: %s %s", $pref, $from, $comd, $args);
+
 	      if ($comd eq 'ECHO' || $comd eq 'PING')
 		{
 		  ctcp_send(0, $from, "%s %s", $comd, $args);
@@ -2805,7 +2858,7 @@ sub dcc_add_line
   my ($dcc, $itsme) = @_;
   my $bnum = VIM::Eval("bufnr('%')");
 
-  VIM::DoCommand("call s:OpenBuf_Chat(\"$dcc->{'nick'}\",
+  VIM::DoCommand("call s:OpenBuf_Chat(\"=$dcc->{'nick'}\",
 	\				\"$dcc->{'iserver'}->{'server'}\")");
   VIM::DoCommand("call s:PreBufModify()");
 
@@ -3076,18 +3129,13 @@ sub dcc_close
       close($dcc->{'fh'});
     }
 
-  if (0)
-    {
-      # TODO: transfer statistics or something here?
-    }
-
   # XXX: Delete it by default?  Or should we wait a few seconds?
   if (!defined($destroy) || $destroy)
     {
       if (   (($dcc->{'flags'} & $DCC_TYPE) == $DCC_CHATRECV)
 	  || (($dcc->{'flags'} & $DCC_TYPE) == $DCC_CHATSEND))
 	{
-	  VIM::DoCommand("call s:CloseChat(\"$dcc->{'nick'}\",
+	  VIM::DoCommand("call s:CloseChat(\"=$dcc->{'nick'}\",
 		\			  \"$dcc->{'iserver'}->{'server'}\")");
 	}
       del_dccclient($dcc);
@@ -4072,7 +4120,17 @@ sub parse_privmsg
       # Handle CTCP messages first
       if (process_ctcp_query($from, $pref, $chan, \$mesg))
 	{
-	  irc_add_line($chan, "<%s%s>: %s", $pref, $from, $mesg);
+	  if (is_channel($chan))
+	    {
+	      irc_add_line($chan, "<%s%s>: %s", $pref, $from, $mesg);
+	    }
+	  else
+	    {
+	      if (is_me($chan))
+		{
+		  irc_chat_line($from, "<%s>: %s", $from, $mesg);
+		}
+	    }
 	}
     }
 }
