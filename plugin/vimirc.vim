@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 February 2004
-" Last Change: Wed, 31 Mar 2004 20:56:43 +0900 (JST)
+" Last Change: Thu, 01 Apr 2004 22:12:39 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -45,8 +45,10 @@
 "
 "   Misc.:
 "     let g:vimirc_autojoin	="list of channels to join upon logon"
-"				  in a format:
+"				  in either format:
+"
 "				    #chan1,#chan2
+"				    #chan1|#chan2@irc.foo.com,#chan3@irc.bar.com
 "
 "     let g:vimirc_nickpass	="list of passwords to identify yourself to
 "				  NickServ"
@@ -60,8 +62,8 @@
 "				  the same pass for different nicks, or you
 "				  have only one nick registered.
 "
-"				  Use commas to separate settings for multiple
-"				  servers.  (Only irc.freenode.net is
+"				  Use commas to separate settings for each
+"				  server.  (Only irc.freenode.net is
 "				  supported currently)
 "
 "     let g:vimirc_partmsg	="message sent with QUIT/PART"
@@ -153,6 +155,7 @@
 "   * command-line completion (with tab key)
 "   * scripting (?)
 "   * nicks auto-identification
+"   * control characters (bold, underline etc.)
 "   * help
 "   * menus
 "   * ctcp, including dcc stuffs (mostly done)
@@ -172,7 +175,7 @@ endif
 let s:save_cpoptions = &cpoptions
 set cpoptions&
 
-let s:version = '0.6.6'
+let s:version = '0.6.7'
 let s:client  = 'VimIRC '.s:version
 " Set this to zero when releasing, which I'll occasionally forget, for sure
 let s:debug = 0
@@ -420,10 +423,7 @@ function! s:DoAutocmds()
 endfunction
 
 function! s:UndoAutocmds()
-  augroup VimIRC
-    autocmd! CursorHold
-    autocmd! BufHidden
-  augroup END
+  autocmd! VimIRC
 endfunction
 
 function! s:MainLoop()
@@ -572,8 +572,8 @@ function! s:IsBufChat(...)
   return !match(bufname(a:0 && a:1 ? a:1 : '%'), s:bufname_chat)
 endfunction
 
-function! s:IsChannel(chan)
-  return !(match(a:chan, '[&#+!]'))
+function! s:IsChannel(channel)
+  return !match(a:channel, '[&#+!]')
 endfunction
 
 function! s:VisitServer()
@@ -584,12 +584,12 @@ function! s:VisitList()
   return (s:SelectWindow(s:GetBufNum_List()) >= 0)
 endfunction
 
-function! s:VisitChannel(chan)
-  return (s:SelectWindow(s:GetBufNum_Channel(a:chan)) >= 0)
+function! s:VisitChannel(channel)
+  return (s:SelectWindow(s:GetBufNum_Channel(a:channel)) >= 0)
 endfunction
 
-function! s:VisitNicks(chan)
-  return (s:SelectWindow(s:GetBufNum_Nicks(a:chan)) >= 0)
+function! s:VisitNicks(channel)
+  return (s:SelectWindow(s:GetBufNum_Nicks(a:channel)) >= 0)
 endfunction
 
 "
@@ -926,7 +926,7 @@ function! s:CloseList()
     let v:errmsg = ''
     while s:SelectWindow(bufnum) >= 0
       silent! close
-      if strlen(v:errmsg
+      if strlen(v:errmsg)
 	break
       endif
     endwhile
@@ -1267,6 +1267,14 @@ function! s:Send(loop)
   endif
 endfunction
 
+function! s:SearchWord(comd)
+  let word = input(a:comd)
+  if strlen(word)
+    let @/ = word
+  endif
+  silent! execute 'normal!' (a:comd == '/' ? 'n' : 'N')
+endfunction
+
 function! s:JoinChannel()
   let chan = matchstr(getline('.'), '^\S\+')
   if s:IsChannel(chan) && s:GetConf_YN("Join the channel ".chan."?")
@@ -1380,96 +1388,9 @@ function! s:SelectNickCmd(loop) range
   endif
 endfunction
 
-function! s:SearchWord(comd)
-  let word = input(a:comd)
-  if strlen(word)
-    let @/ = word
-  endif
-  silent! execute 'normal!' (a:comd == '/' ? 'n' : 'N')
-endfunction
-
-function! s:OfflineMsg()
-  echo s:IsSockOpen() ? s:IsBufCommand()
-	\		? 'Hitting <CR> will send out the current line'
-	\		: 'Hit <Space> to get online'
-	\	      : 'Do /SERVER command to get connected'
-endfunction
-
-function! s:PrintHelp()
-  try
-    echohl Title
-    echo " VimIRC Help\n\n"
-    echo " Available commands:\n\n"
-    echohl None
-    echo "/server [host:port]"
-    echo "\tTry to connect with a new server.  Or reconnect the current server"
-    echo "\tby omitting an argument."
-    echo "/quit message"
-    echo "\tDisconnect with the current server.  Message is optional."
-    echo "\n"
-    echo "/join channel(s)"
-    echo "\tJoin specified channels. \"channels\" is a list of one or more of"
-    echo "\tchannel names, separated with commas."
-    echo "/part [channel(s)] [message]"
-    echo "\tExit from the specified channels.  If you omit channels, you'll "
-    echo "\texit from the current channel."
-    echo "\n"
-    echo "/topic [channel] [topic]"
-    echo "\tSet or show the current topic for channel."
-    echo "\n"
-    echo "/msg target message"
-    echo "\tSend a message to a nick/channel."
-    echo "message"
-    echo "\tSend a message to the current channel or the user currently"
-    echo "\tquerying with."
-    echo "\n"
-    echo "/query nick"
-    echo "\tStart a query session with a user."
-    echo "/query"
-    echo "\tClose it."
-    echo "\n"
-    echo "/action target message"
-    echo "\tSend a message to a nick/channel, playing some role."
-    echo "/me message"
-    echo "\tSend a message to the current channel/query target, playing some"
-    echo "\trole."
-    echo "\n"
-    echo "/dcc help"
-    echo "\tShow a help message for DCC commands"
-    echo "\n"
-    echohl MoreMsg
-    echo "Hit any key to continue"
-    call getchar()
-  finally
-    echohl None
-    redraw!
-  endtry
-endfunction
-
-function! s:PrintHelp_DCC()
-  echohl Title
-  echo " Available DCC commands:\n\n"
-  echohl None
-  echo "/dcc send nick file"
-  echo "\tOffer DCC SEND to nick"
-  echo "/dcc chat nick"
-  echo "\tOffer DCC CHAT to, or accept pending offer from, nick"
-  echo "/dcc get [nick [file]]"
-  echo "\tAccept pending SEND offer from nick"
-  echo "/dcc close [type [nick]]"
-  echo "\tClose SEND/CHAT/GET connection with nick"
-  echo "/dcc list"
-  echo "\tList all active/pending DCC connections"
-  echo "\n"
-  try
-    echohl MoreMsg
-    echo "Hit any key to continue"
-    call getchar()
-  finally
-    echohl None
-    redraw!
-  endtry
-endfunction
+"
+" Notifications
+"
 
 function! s:NotifyNewEntry(...)
   " If the bottom line is already visible, or just forced to do so,
@@ -1484,6 +1405,13 @@ function! s:NotifyNewEntry(...)
     " Show the correct line number
     call s:RedrawStatus()
   endif
+endfunction
+
+function! s:OfflineMsg()
+  echo s:IsSockOpen() ? s:IsBufCommand()
+	\		? 'Hitting <CR> will send out the current line'
+	\		: 'Hit <Space> to get online'
+	\	      : 'Do /SERVER command to get connected'
 endfunction
 
 function! s:UpdateTitleBar()
@@ -1502,7 +1430,7 @@ function! s:SetUserMode(umode)
   let bufnum = s:GetBufNum_Server()
   if bufnum >= 0
     call setbufvar(bufnum, 'umode', a:umode)
-    call setbufvar(bufnum, 'title', '  '.s:GetCurrentNick().
+    call setbufvar(bufnum, 'title', '  '.s:GetCurNick().
 	  \' [+'.a:umode.'] @ '.s:server)
     call s:RedrawStatus(1)
     call s:UpdateTitleBar()
@@ -1606,16 +1534,16 @@ function! s:ExecuteSafe(prefix, comd)
   execute (exists(':'.a:prefix) == 2 ? a:prefix : '') a:comd
 endfunction
 
-function! s:GetHiliteCursor()
+function! s:GetHiCursor()
   return has('gui') ? 'Cursor' : 'DiffText'
 endfunction
 
 function! s:HiliteColumn(bogus, ...)
-  silent! execute 'match' (a:0 ? a:1 : s:GetHiliteCursor()) '/\%#\S*/'
+  silent! execute 'match' (a:0 ? a:1 : s:GetHiCursor()) '/\%#\S*/'
 endfunction
 
 function! s:HiliteLine(lnum, ...)
-  silent! execute 'match' (a:0 ? a:1 : s:GetHiliteCursor())
+  silent! execute 'match' (a:0 ? a:1 : s:GetHiCursor())
 	\ '/^.*\%'.(a:lnum ? a:lnum : line(a:lnum)).'l.*$/'
 endfunction
 
@@ -1692,6 +1620,86 @@ function! s:BufTrim()
   while search('^\s*$', 'w') && line('$') > 1
     delete _
   endwhile
+endfunction
+
+"
+" Help
+"
+
+function! s:PrintHelp()
+  try
+    echohl Title
+    echo " VimIRC Help\n\n"
+    echo " Available commands:\n\n"
+    echohl None
+    echo "/server [host:port]"
+    echo "\tTry to connect with a new server.  Or reconnect the current server"
+    echo "\tby omitting an argument."
+    echo "/quit message"
+    echo "\tDisconnect with the current server.  Message is optional."
+    echo "\n"
+    echo "/join channel(s)"
+    echo "\tJoin specified channels. \"channels\" is a list of one or more of"
+    echo "\tchannel names, separated with commas."
+    echo "/part [channel(s)] [message]"
+    echo "\tExit from the specified channels.  If you omit channels, you'll "
+    echo "\texit from the current channel."
+    echo "\n"
+    echo "/topic [channel] [topic]"
+    echo "\tSet or show the current topic for channel."
+    echo "\n"
+    echo "/msg target message"
+    echo "\tSend a message to a nick/channel."
+    echo "message"
+    echo "\tSend a message to the current channel or the user currently"
+    echo "\tquerying with."
+    echo "\n"
+    echo "/query nick"
+    echo "\tStart a query session with a user."
+    echo "/query"
+    echo "\tClose it."
+    echo "\n"
+    echo "/action target message"
+    echo "\tSend a message to a nick/channel, playing some role."
+    echo "/me message"
+    echo "\tSend a message to the current channel/query target, playing some"
+    echo "\trole."
+    echo "\n"
+    echo "/dcc help"
+    echo "\tShow a help message for DCC commands"
+    echo "\n"
+    echohl MoreMsg
+    echo "Hit any key to continue"
+    call getchar()
+  finally
+    echohl None
+    redraw!
+  endtry
+endfunction
+
+function! s:PrintHelp_DCC()
+  echohl Title
+  echo " Available DCC commands:\n\n"
+  echohl None
+  echo "/dcc send nick file"
+  echo "\tOffer DCC SEND to nick"
+  echo "/dcc chat nick"
+  echo "\tOffer DCC CHAT to, or accept pending offer from, nick"
+  echo "/dcc get [nick [file]]"
+  echo "\tAccept pending SEND offer from nick"
+  echo "/dcc close [type [nick]]"
+  echo "\tClose SEND/CHAT/GET connection with nick"
+  echo "/dcc list"
+  echo "\tList all active/pending DCC connections"
+  echo "\n"
+  try
+    echohl MoreMsg
+    echo "Hit any key to continue"
+    call getchar()
+  finally
+    echohl None
+    redraw!
+  endtry
 endfunction
 
 "
@@ -2223,7 +2231,7 @@ function! s:DoSend(comd, args)
   my $comd = VIM::Eval('a:comd');
   my $args = VIM::Eval('a:args');
 
-  irc_send("%s".($args ? " %s" : ""), $comd, $args);
+  irc_send("%s%s", $comd, ($args ? " $args" : ""));
 }
 EOP
 endfunction
@@ -2239,7 +2247,7 @@ function! s:SetCurServer(server)
 EOP
 endfunction
 
-function! s:GetCurrentNick()
+function! s:GetCurNick()
   " Enabling to hold different nicks across servers
   let nick = s:GetVimVar('s:nick_'.s:server)
   if !strlen(nick)
@@ -2248,7 +2256,7 @@ function! s:GetCurrentNick()
   return nick
 endfunction
 
-function! s:SetCurrentNick(nick)
+function! s:SetCurNick(nick)
   let s:nick_{s:server} = a:nick
   perl <<EOP
 {
@@ -2331,7 +2339,7 @@ function! s:Server(server)
   my $port  = VIM::Eval('l:port');
   my $server= VIM::Eval('l:server');
 
-  my $nick  = VIM::Eval('s:GetCurrentNick()');
+  my $nick  = VIM::Eval('s:GetCurNick()');
 
   if ($port <= 0)
     {
@@ -2450,6 +2458,7 @@ sub add_server
 		  sock	  => undef,
 		  conn	  => 0,
 		  nick	  => undef,
+		  pass	  => undef,
 		  umode	  => undef,
 		  away	  => undef,
 		  motd	  => 0,
@@ -2526,6 +2535,10 @@ sub login_server
       $Current_Server = $server;
     }
 
+  if ($server->{'pass'})
+    {
+      irc_send("PASS %s", $server->{'pass'});
+    }
   irc_send("NICK %s", $server->{'nick'});
   irc_send("USER %s %s * :%s",
 	    vim_getvar('s:user'),
@@ -2561,9 +2574,25 @@ sub post_login_server
 						    ? " $cref->{'key'}" : ""));
 	}
     }
-  elsif (vim_getvar('g:vimirc_autojoin'))
+  else
     {
-      VIM::DoCommand("call s:Send_JOIN('JOIN', g:vimirc_autojoin)");
+      autojoin_channels();
+    }
+}
+
+sub autojoin_channels
+{
+  if (my $autojoin = vim_getvar('g:vimirc_autojoin'))
+    {
+      if (my ($chans) = ($autojoin =~ /([^,]+)\@$Current_Server->{'server'}/))
+	{
+	  $chans =~ s/\|(?=[&#+!])/,/g;
+	  VIM::DoCommand('call s:Send_JOIN("JOIN", "'.do_escape($chans).'")');
+	}
+      else
+	{
+	  VIM::DoCommand("call s:Send_JOIN('JOIN', g:vimirc_autojoin)");
+	}
     }
 }
 
@@ -3964,6 +3993,10 @@ sub add_splitnick
 
   if (my $cref = find_channel($chan))
     {
+      unless (%{$cref->{'split'}})
+	{
+	  irc_add_line('', "!: Netsplit detected");
+	}
       $cref->{'split'}->{$nick} = 1;
     }
 }
@@ -3977,6 +4010,10 @@ sub del_splitnick
       if (exists($cref->{'split'}->{$nick}))
 	{
 	  delete($cref->{'split'}->{$nick});
+	  unless (%{$cref->{'split'}})
+	    {
+	      irc_add_line('', "*: Netsplit is over");
+	    }
 	  return 1;
 	}
     }
@@ -4176,7 +4213,7 @@ sub parse_number
       irc_add_line('', $mesg);
       unless (is_me($to))	# user had to change nick when connecting
 	{
-	  VIM::DoCommand('call s:SetCurrentNick("'.do_escape($to).'")');
+	  VIM::DoCommand('call s:SetCurNick("'.do_escape($to).'")');
 	}
     }
   elsif ($comd == 002)	# RPL_YOURHOST
@@ -4508,7 +4545,7 @@ sub parse_join
 	    {
 	      draw_nickline($from, undef, $chan, 1);
 	    }
-	  irc_add_line($chan, "->: Enter %s", $from);
+	  irc_add_line($chan, "->: Enter %s [%s]", $from, $From_Server);
 	}
     }
 }
@@ -4574,7 +4611,7 @@ sub parse_nick
 	{
 	  irc_add_line('', "*: New nick %s approved", $nick);
 	  irc_send("MODE %s", $nick);
-	  VIM::DoCommand('call s:SetCurrentNick("'.do_escape($nick).'")');
+	  VIM::DoCommand('call s:SetCurNick("'.do_escape($nick).'")');
 	}
 
       foreach my $cref (@{$Current_Server->{'chans'}})
@@ -4623,7 +4660,8 @@ sub parse_part
       else
 	{
 	  draw_nickline($from, $pref, $chan, 0);
-	  irc_add_line($chan, "<-: Exit %s%s (%s)", $pref, $from, $mesg);
+	  irc_add_line($chan, "<-: Exit %s%s [%s] (%s)", $pref, $from,
+							  $From_Server, $mesg);
 	}
     }
 }
@@ -4675,8 +4713,9 @@ sub parse_privmsg
 sub parse_quit
 {
   my ($from, $args) = @_;
-  my ($mesg) = (${$args} =~ /^:(.*)$/);
-  my $split = ($mesg =~ /^[-.[:alnum:]]+ [-.[:alnum:]]+$/);
+  my $regex = qr([[:alnum:]]+(?:\.[-[:alnum:]]+)+);
+  my ($mesg)= (${$args} =~ /^:(.*)$/);
+  my $split = ($mesg =~ /^$regex $regex$/);
 
   foreach my $cref (@{$Current_Server->{'chans'}})
     {
@@ -4686,7 +4725,7 @@ sub parse_quit
       if (del_nick($from, $chan))
 	{
 	  # Handle netsplits: just hide QUIT messages if one occurs.  Also,
-	  # hold the nicks who are to be resurrected, to hide the expected
+	  # hold the nicks, who are to be resurrected, to hide the expected
 	  # JOIN messages.
 	  # TODO: Show some message about what is going on?
 	  if ($split)
@@ -4696,7 +4735,8 @@ sub parse_quit
 	  else
 	    {
 	      draw_nickline($from, $pref, $chan, 0);
-	      irc_add_line($chan, "<=: Exit %s%s (%s)", $pref, $from, $mesg);
+	      irc_add_line($chan, "<=: Exit %s%s [%s] (%s)", $pref, $from,
+							  $From_Server, $mesg);
 	    }
 	}
     }
@@ -4735,6 +4775,12 @@ sub parse_line
   if (my ($from, $comd, $args) = (${$line} =~ /^:(\S+) (\S+) (.*)$/))
     {
       ($from, $From_Server) = ($from =~ /^([^!]+)(?:!(\S+))?$/);
+
+      if (0)
+	{
+	  vim_printf("from=%s server=%s comd=%s args=%s", $from, $From_Server,
+								$comd, $args);
+	}
 
       if ($comd + 0)
 	{
