@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 Feb 2004
-" Last Change: Sat, 26 Mar 2005 11:58:35 +0900 (JST)
+" Last Change: Tue, 29 Mar 2005 12:14:57 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -305,7 +305,7 @@
 "	("freenode" should expand into "/server irc.freenode.net" in this
 "	case).
 "
-"   7.	Type shorter by utilizing aliases.  E.g.:
+"   7.	Type shorter by utilizing aliases.  Example:
 "
 "	  /alias sj split join
 "
@@ -319,7 +319,7 @@
 if exists('g:loaded_vimirc') || &compatible
   finish
 endif
-let s:version = '0.9.17'
+let s:version = '0.9.18'
 
 let s:debug = (s:version =~# '-devel$')
 if !s:debug
@@ -650,7 +650,7 @@ function! s:StartVimIRC(...)
   " Initialize perl codes
   call s:PerlIRC()
   " Now it is OK to commence connections
-  call s:StartServer(s:server)
+  call s:StartServer()
 
   call s:MainLoop()
 endfunction
@@ -686,27 +686,25 @@ function! s:QuitWhat(severe)
     return s:QuitVimIRC()
   endif
 
-  call s:SetCurServer(s:GetVimVar('b:server'))
+  let server = s:GetVimVar('b:server')
+  let channel= s:GetVimVar('b:channel')
+  call s:SetCurServer(server)
 
-  if s:IsChanChat(s:GetVimVar('b:channel'))
-    if s:IsNick(b:channel)
-      if s:Confirm_YN('Really quit chat with '.b:channel)
-	call s:QuitChat(b:channel)
-      endif
-    else
-      if s:Confirm_YN('Really close channel '.b:channel)
-	call s:Send_PART('PART', b:channel)
-      endif
+  if s:IsChannel(channel)
+    if s:Confirm_YN('Really close channel '.channel)
+      call s:Send_PART('PART', channel)
+    endif
+  elseif s:IsNick(channel)
+    if s:Confirm_YN('Really quit chat with '.channel)
+      call s:QuitChat(channel)
+    endif
+  elseif s:IsConnected()
+    if s:Confirm_YN('Really disconnect with server '.s:server)
+      call s:Send_QUIT('QUIT', '')
     endif
   else
-    if s:IsConnected()
-      if s:Confirm_YN('Really disconnect with server '.s:server)
-	call s:Send_QUIT('QUIT', '')
-      endif
-    else
-      if s:Confirm_YN('Really quit VimIRC')
-	return s:QuitVimIRC()
-      endif
+    if s:Confirm_YN('Really quit VimIRC')
+      return s:QuitVimIRC()
     endif
   endif
 
@@ -984,18 +982,14 @@ function! s:IsBufType_ServerDead()
   return (s:IsBufType_Server() && s:GetVimVar('b:dead'))
 endfunction
 
-" Whether the buffer is a currently active server/channel/chat
-function! s:IsBufType_ChanServCurrent()
-  return (s:GetVimVar('b:server').s:GetVimVar('b:channel') ==#
-	\		      s:GetVimVar('s:server').s:GetVimVar('s:channel'))
-endfunction
-
-function! s:IsBufType_ChanServOther()
-  return !s:IsBufType_ChanServCurrent()
-endfunction
-
 function! s:IsServer(server)
-  return (a:server =~ '[.]')
+  " TODO: Be more precise (see RFC3986)
+  return (a:server =~ '[.:]')
+endfunction
+
+function! s:IsServerIRC(url)
+  return (a:url =~?
+      \'^\%(irc://\|\%(\w[-.[:alnum:]]\+[-.]\)\{-\}irc\)[^/]\+\%([/:]#.*\)\=$')
 endfunction
 
 function! s:IsChannel(channel)
@@ -1228,6 +1222,9 @@ function! s:OpenBuf_List()
       call s:InitBuf_List(bufname)
     endif
   endif
+  if loaded
+    call s:DoNormal('^')
+  endif
 endfunction
 
 function! s:OpenBuf_Channel(channel)
@@ -1458,6 +1455,24 @@ endfunction
 " Buffer initilization
 "
 
+function! s:RegistMap(key, func, ...)
+  let modes = a:0 ? a:1 : 'n'
+  while strlen(modes)
+    let mode = s:StrDivide(modes, 1)
+    execute mode.'noremap <buffer> <silent>' (a:key)
+	  \	      (mode == 'i' ? '<Esc>' : '').':call <SID>'.a:func.'<CR>'
+    let modes = s:StrDivide(modes, 2)
+  endwhile
+endfunction
+
+function! s:UnregistMap(keys)
+  let keys = a:keys
+  while strlen(keys)
+    call s:ExecuteSilent('unmap <buffer> '.s:StrDivide(keys, 1))
+    let keys = s:StrDivide(keys, 2)
+  endwhile
+endfunction
+
 function! s:DoSettings()
   setlocal bufhidden=hide
   setlocal buftype=nofile
@@ -1466,28 +1481,30 @@ function! s:DoSettings()
   setlocal noswapfile
   setlocal wrap
 
-  nnoremap <buffer> <silent> <Space>	:call <SID>MainLoop()<CR>
-  nnoremap <buffer> <silent> <CR>	:call <SID>OpenLink(0)<CR>
-  nnoremap <buffer> <silent> <C-CR>	:call <SID>OpenLink(1)<CR>
-  nnoremap <buffer> <silent> <S-CR>	:call <SID>OpenLink(1)<CR>
-  nnoremap <buffer> <silent> a		:call <SID>OpenBuf_Command()<CR>
-  nnoremap <buffer> <silent> A		:call <SID>OpenBuf_Command()<CR>
-  nnoremap <buffer> <silent> i		:call <SID>OpenBuf_Command()<CR>
-  nnoremap <buffer> <silent> I		:call <SID>OpenBuf_Command()<CR>
-  nnoremap <buffer> <silent> o		:call <SID>OpenBuf_Command()<CR>
-  nnoremap <buffer> <silent> O		:call <SID>OpenBuf_Command()<CR>
-  nnoremap <buffer> <silent> p		:call <SID>Beep(1)<CR>
-  nnoremap <buffer> <silent> P		:call <SID>Beep(1)<CR>
-  nnoremap <buffer> <silent> q		:call <SID>QuitWhat(0)<CR>
-  nnoremap <buffer> <silent> Q		:call <SID>QuitWhat(1)<CR>
-  nnoremap <buffer> <silent> ZZ		:call <SID>QuitWhat(0)<CR>
-  nnoremap <buffer> <silent> ZQ		:call <SID>QuitWhat(1)<CR>
-  nnoremap <buffer> <silent> <C-L>	:call <SID>ResizeWin(1)<CR>
-  nnoremap <buffer> <silent> <C-N>	:call <SID>WalkThruChanServ(1, 0)<CR>
-  nnoremap <buffer> <silent> <C-P>	:call <SID>WalkThruChanServ(0, 0)<CR>
-  nnoremap <buffer> <silent> <C-W><C-N>	:call <SID>WalkThruChanServ(1, 1)<CR>
-  nnoremap <buffer> <silent> <C-W><C-P>	:call <SID>WalkThruChanServ(0, 1)<CR>
-  nnoremap <buffer> <silent> <F1>	:call <SID>Cmd_HELP()<CR>
+  call s:RegistMap('<Space>', 'MainLoop()')
+  call s:RegistMap('<CR>', 'OpenLink(0)')
+  call s:RegistMap('<C-CR>', 'OpenLink(1)')
+  call s:RegistMap('<S-CR>', 'OpenLink(1)')
+  call s:RegistMap('<C-W><CR>', 'OpenLink(1)')
+  call s:RegistMap('<C-W><C-CR>', 'OpenLink(1)')
+  call s:RegistMap('a', 'OpenBuf_Command()')
+  call s:RegistMap('A', 'OpenBuf_Command()')
+  call s:RegistMap('i', 'OpenBuf_Command()')
+  call s:RegistMap('I', 'OpenBuf_Command()')
+  call s:RegistMap('o', 'OpenBuf_Command()')
+  call s:RegistMap('O', 'OpenBuf_Command()')
+  call s:RegistMap('p', 'Beep(1)', 'n,v')
+  call s:RegistMap('P', 'Beep(1)', 'n,v')
+  call s:RegistMap('q', 'QuitWhat(0)')
+  call s:RegistMap('Q', 'QuitWhat(1)')
+  call s:RegistMap('ZZ', 'QuitWhat(0)')
+  call s:RegistMap('ZQ', 'QuitWhat(1)')
+  call s:RegistMap('<C-L>', 'ResizeWin(1)')
+  call s:RegistMap('<C-N>', 'WalkThruChanServ(1, 0)')
+  call s:RegistMap('<C-P>', 'WalkThruChanServ(0, 0)')
+  call s:RegistMap('<C-W><C-N>', 'WalkThruChanServ(1, 1)')
+  call s:RegistMap('<C-W><C-P>', 'WalkThruChanServ(0, 1)')
+  call s:RegistMap('<F1>', 'Cmd_HELP()')
 
   call s:HiliteClear()
 endfunction
@@ -1583,10 +1600,10 @@ function! s:InitBuf_Info(bufname)
   call s:DoSettings()
   call s:DoSyntax_Info()
   setlocal nowrap
-  nnoremap <buffer> <silent> <CR>	:call <SID>EnterChanServ(0)<CR>
-  nnoremap <buffer> <silent> <C-CR>	:call <SID>EnterChanServ(1)<CR>
-  nnoremap <buffer> <silent> <S-CR>	:call <SID>EnterChanServ(1)<CR>
-  nnoremap <buffer> <silent> <C-W><CR>	:call <SID>EnterChanServ(1)<CR>
+  call s:RegistMap('<CR>', 'EnterChanServ(0)')
+  call s:RegistMap('<C-CR>', 'EnterChanServ(1)')
+  call s:RegistMap('<S-CR>', 'EnterChanServ(1)')
+  call s:RegistMap('<C-W><CR>', 'EnterChanServ(1)')
 
   call s:SetBufNum(a:bufname)
 endfunction
@@ -1595,7 +1612,7 @@ function! s:InitBuf_Server(bufname, port)
   let b:server	= s:server
   let b:port	= a:port
   let b:umode	= ''
-  let b:title	= '  '.s:nick.' @ '.s:server
+  let b:title	= '  '.s:GetCurNick().' @ '.s:server
 
   call setline(1, s:GetTime(1).' *: Connecting with '.s:server.'...')
   call s:DoSettings()
@@ -1615,9 +1632,9 @@ function! s:InitBuf_List(bufname)
   call s:DoSyntax_List()
   setlocal nowrap
   " I take Mutt's key-bindings for sorting
-  nnoremap <buffer> <silent> o	:call <SID>SortSelect()<CR>
-  nnoremap <buffer> <silent> O	:call <SID>SortReverse()<CR>
-  nnoremap <buffer> <silent> R	:call <SID>UpdateList()<CR>
+  call s:RegistMap('o', 'SortSelect()')
+  call s:RegistMap('O', 'SortReverse()')
+  call s:RegistMap('R', 'UpdateList()')
 
   call s:SetBufNum(a:bufname)
 endfunction
@@ -1660,8 +1677,7 @@ function! s:InitBuf_Nicks(bufname, channel)
   call s:DoSettings()
   call s:DoSyntax_Nicks()
   setlocal nowrap
-  nnoremap <buffer> <silent> <CR> :call <SID>SelectNickAction()<CR>
-  vnoremap <buffer> <silent> <CR> :call <SID>SelectNickAction()<CR>
+  call s:RegistMap('<CR>', 'SelectNickAction()', 'n,v')
 
   call s:SetBufNum(a:bufname)
   if s:IsNick(a:channel)
@@ -1679,19 +1695,9 @@ function! s:InitBuf_Command(bufname, channel)
 
   call s:DoSettings()
   setlocal expandtab
-  nnoremap <buffer> <silent> <CR> :call <SID>SendLines()<CR>
-  inoremap <buffer> <silent> <CR> <Esc>:call <SID>SendLines()<CR>
-  vnoremap <buffer> <silent> <CR> :call <SID>SendLines()<CR>
-  nunmap <buffer> a
-  nunmap <buffer> A
-  nunmap <buffer> i
-  nunmap <buffer> I
-  nunmap <buffer> o
-  nunmap <buffer> O
-  nunmap <buffer> p
-  nunmap <buffer> P
+  call s:RegistMap('<CR>', 'SendLines()', 'n,i,v')
+  call s:UnregistMap('a,A,i,I,o,O,p,P')
 
-  " TODO: Forbid gq stuffs (?)
   call s:SetBufNum(a:bufname)
 endfunction
 
@@ -1791,6 +1797,7 @@ function! s:CloseBuf_Channel(channel)
       call s:OpenBuf_Server()
     endif
     call s:BufClose(bufnum)
+    call s:ScreenBottom()
   endif
 endfunction
 
@@ -1805,6 +1812,7 @@ function! s:CloseBuf_Chat(nick, server)
       call s:OpenBuf_Server()
     endif
     call s:BufClose(bufnum)
+    call s:ScreenBottom()
   endif
 
   let s:server = save_server
@@ -2062,7 +2070,6 @@ function! s:HandleMultiKey(char, multi)
   endwhile
 
   call s:UnstickKey(0)
-  " XXX: Some commands could get stuck
   if comd[0] == "\<C-W>"
     if char == "\<CR>" || char == "\<C-CR>" || char == "\<S-CR>"
       call s:HandleEnter(1)
@@ -2690,27 +2697,54 @@ endfunction
 " Wrapper functions for commencing communication
 "
 
-function! s:StartServer(servers)
-  let servers = a:servers
-  while strlen(servers)
-    let server = s:StrDivide(servers, 1)
-    if strlen(server)
-      call s:Cmd_SERVER(server)
-    endif
-    let servers = s:StrDivide(servers, 2)
-  endwhile
+function! s:StartServer(...)
+  let manual = a:0
+  let servers= manual ? a:1 : s:server
+  let retval = (strlen(servers)
+	\	&& (!manual || s:Confirm_YN('Open '.servers.' with VimIRC')))
+
+  if retval
+    " irc.server.com:#channel
+    let rx = '^\%(irc://\)\=\(..\{-\}\)\%([/:]\(#.*\)\)\=$'
+    " NOTE: The above style of channel specification is not allowed for
+    " `g:vimirc_server'. Use `g:vimirc_autojoin' instead.
+
+    while strlen(servers)
+      let server = s:StrDivide(servers, 1)
+      if strlen(server)
+	let channel= manual ? s:StrMatch(server, rx, '\2') : ''
+	let server = s:StrMatch(server, rx, '\1')
+	if manual
+	  call s:HiliteURL(server)
+	endif
+
+	call s:Cmd_SERVER(server)
+	if strlen(channel)
+	  if s:IsConnected(server)
+	    call s:Send_JOIN('JOIN', channel)
+	  else
+	    " Open specified channel after logging in the server
+	    let s:autojoin = channel
+	  endif
+	endif
+      endif
+      let servers = s:StrDivide(servers, 2)
+    endwhile
+  endif
+  return retval
 endfunction
 
-function! s:StartChannel(channel, split)
-  if s:IsConnected(s:GetVimVar('b:server'))
-	\			    && s:Confirm_YN('Join channel '.a:channel)
-    let s:split = a:split
-
+function! s:StartChannel(channel)
+  let retval = (s:IsConnected(s:GetVimVar('b:server'))
+	\			    && s:Confirm_YN('Join channel '.a:channel))
+  if retval
+    if 0 || !s:IsBufType_List()
+      call s:HiliteURL(a:channel)
+    endif
     call s:SetCurServer(b:server)
     call s:Send_JOIN('JOIN', a:channel)
-
-    let s:split = 0
   endif
+  return retval
 endfunction
 
 " TODO: Keep track of the state of the nick you are chatting with (ison, nick
@@ -2726,11 +2760,17 @@ function! s:StartChat(nick, ...)
 endfunction
 
 function! s:StartWeb(url)
-  let comd = s:Confirm_YN('Really open url '.a:url) ? s:GetUserBrowser() : ''
+  let comd = (s:IsServer(a:url)
+	\		    && s:Confirm_YN('Open url '.a:url.' with browser'))
+	\	? s:GetUserBrowser() : ''
+  let retval = strlen(comd)
 
-  if strlen(comd)
-    call s:HiliteURL(a:url)
-    let url = s:StrQuote(s:EscapeFName(a:url))
+  if retval
+    " "irc..." server not opened with VimIRC
+    let url = (a:url !~ '^\a\+://' ? 'http://' : '').a:url
+    call s:HiliteURL(url)
+
+    let url = s:StrQuote(s:EscapeFName(url))
     if comd =~# '%URL%'
       " Avoid special chars to be replaced with the matched pattern
       let comd = substitute(comd, '%URL%', escape(url, '&\'), 'g')
@@ -2739,7 +2779,7 @@ function! s:StartWeb(url)
     endif
     call s:ExecuteShell(comd)
   endif
-  return strlen(comd)
+  return retval
 endfunction
 
 function! s:Cmd_QUERY(args)
@@ -2778,6 +2818,11 @@ function! s:DoAutoJoin()
     endif
     let autojoin = s:StrDivide(autojoin, 2)
   endwhile
+
+  if exists('s:autojoin')
+    call s:Send_JOIN('JOIN', s:autojoin)
+    unlet s:autojoin
+  endif
 endfunction
 
 "
@@ -2785,41 +2830,58 @@ endfunction
 " (heavily borrowed from Chalice)
 "
 
-function! s:ExtractChannel()
-  let channel = expand('<cWORD>')
-  return (s:IsBufType_List() && s:IsChannel(channel)) ? channel : ''
+function! s:ExtractChannel(str)
+  return matchstr(a:str, '[&#+!]\S\+')
 endfunction
 
 function! s:ExtractURL(str)
-  return s:ValidateURL(matchstr(a:str,
-	\		  '\<\%(\%(ftp\|https\=\)://\|www\%(\d\+\)\=\.\)\S\+'))
-endfunction
-
-function! s:ExtractLink()
-  let url = s:ExtractChannel()
-  if !strlen(url)
-    " Get the URL under/after/before cursor
-    let url = s:ExtractURL(expand('<cWORD>'))
-    if !strlen(url)
-      let url = s:ExtractURL(strpart(getline('.'), col('.')))
-      if !strlen(url)
-	let url = s:ExtractURL(getline('.'))
-      endif
-    endif
+  " Catch raw IPs?
+  let url = matchstr(a:str, '\%(\a\+://\)\=\%(\w[-.[:alnum:]]\+\.\)\+\a\+\S*')
+  if strlen(url)
+    let url = s:ValidateURL(url)
   endif
   return url
 endfunction
 
-function! s:OpenLink(split)
-  let url = s:ExtractLink()
-  if s:IsChannel(url)
-    call s:StartChannel(url, a:split)
-  else
-    if "TODO: Open it with VimIRC if it looks like IRC server"
-      call s:StartServer(url)
-    elseif !(strlen(url) && s:StartWeb(url))
-      call s:DoNormal("\<CR>")
+function! s:ExtractLink()
+  let link = ''
+  let line = getline('.')
+  if line =~ '*: \%(Connecting with \|Now talking in #\|Your user modes:\)'
+    return link
+  endif
+
+  let word = expand('<cWORD>')
+  let link = s:ExtractChannel(word)
+  if !strlen(link)
+    " Get URL under/after/before cursor
+    let link = s:ExtractURL(word)
+    if !strlen(link)
+      let link = s:ExtractURL(strpart(line, col('.')))
+      if !strlen(link)
+	let link = s:ExtractURL(line)
+	if !strlen(link)
+	  let link = s:ExtractChannel(line)
+	endif
+      endif
     endif
+  endif
+  return link
+endfunction
+
+function! s:OpenLink(split)
+  let link = s:ExtractLink()
+  let open = strlen(link)
+
+  if open
+    let s:split = a:split
+    let open = s:IsChannel(link) ? s:StartChannel(link)
+	  \			 : (s:IsServerIRC(link) && s:StartServer(link)
+	  \						|| s:StartWeb(link))
+    let s:split = 0
+  endif
+  if !open
+    " Advance cursor if user selected nothing: this is called via <CR> key
+    call s:DoNormal("\<CR>")
   endif
 
   call s:MainLoop()
@@ -3445,8 +3507,9 @@ function! s:ConsumeKey()
   return key
 endfunction
 
-" KLUGE: Without this, special keys entered in normal mode keep generating key
-" codes by themselves, resulting in user-interaction impossibility (vim bug?)
+" KLUGE: Without this, special keys hit in normal mode keep generating key
+" codes by themselves, resulting in nearly 100% CPU-time consumption, or
+" user-interaction impossibility (vim bug?)
 function! s:UnstickKey(force)
   if a:force || !s:IsZero(getchar(1))
     call s:DoNormal('lh')
@@ -3533,10 +3596,6 @@ endfunction
 
 " Validation functions
 
-function! s:IsWin3264()
-  return (has('win32') || has('win32unix') || has('win64'))
-endfunction
-
 function! s:ValidatePath(path)
   let path = a:path
   if strlen(path)
@@ -3551,18 +3610,25 @@ endfunction
 function! s:ValidateURL(url)
   let url = a:url
   if strlen(a:url)
-    " Cut the unnecessary tail
-    let url = substitute(a:url, '[(),.:;\[\]]\+$', '', '')
-    " "www" stuff
-    if url !~ '^\a\+://'
-      let url = 'http://'.url
-    endif
-    " domain only, without the final slash
-    if url =~ '^\a\+://[^/]\+$'
-      let url = url.'/'
+    " Cut the unnecessary tail, e.g.:
+    "	"http://www.foo.com/)."  <= the last 2 chars
+    let url = substitute(a:url, '[),.:;>\]]\+$', '', '')
+    if !s:IsServerIRC(url)
+      " "www" stuff
+      if url !~ '^\a\+://'
+	let url = 'http://'.url
+      endif
+      " domain only, without the final slash
+      if url =~ '^\a\+://[^/]\+$'
+	let url = url.'/'
+      endif
     endif
   endif
   return url
+endfunction
+
+function! s:IsWin3264()
+  return (has('win32') || has('win32unix') || has('win64'))
 endfunction
 
 " Line functions
@@ -3685,12 +3751,6 @@ function! s:ScreenLine(lnum)
     execute lnum
   endif
 endfunction
-endif
-
-if 0
-  function! s:ScreenRefresh()
-    call s:DoNormal("\<C-L>")
-  endfunction
 endif
 
 function! s:ScreenResize(size, vertical)
@@ -4191,23 +4251,22 @@ function! s:Cmd_SERVER(server)
 
   if !strlen(server)
     let server = s:Input('Enter server name')
-    if !strlen(server)
-      return
-    endif
   endif
 
   " TODO: Validity check of server?
   let rx = '^\(..\{-\}\)\%(:\(\d\+\)\)\=\%(\s\+\(\S\+\)\)\=$'
-  if server =~ rx
-    let s:server = s:StrMatch(server, rx, '\1')
-    let port = s:StrMatch(server, rx, '\2') + 0
-    let pass = s:StrMatch(server, rx, '\3')
+  if server !~ rx
+    return
+  endif
 
-    if !port
-      let port = s:GetVimVar('b:port') + 0
-      if port <= 0
-	let port = 6667
-      endif
+  let s:server = tolower(s:StrMatch(server, rx, '\1'))
+  let port = s:StrMatch(server, rx, '\2') + 0
+  let pass = s:StrMatch(server, rx, '\3')
+
+  if !port
+    let port = s:GetVimVar('b:port') + 0
+    if port <= 0
+      let port = 6667
     endif
   endif
 
@@ -4218,9 +4277,10 @@ function! s:Cmd_SERVER(server)
 {
   my $server= VIM::Eval('s:server');
   my $port  = VIM::Eval('l:port');
+  my $nick  = VIM::Eval('s:GetCurNick()');
   my $pass  = VIM::Eval('l:pass');
 
-  cmd_server($server, $port, $pass);
+  cmd_server($server, $port, $nick, $pass);
 }
 EOP
 endfunction
@@ -4733,7 +4793,7 @@ sub open_server
 
 sub cmd_server
 {
-  my ($server, $port, $pass) = @_;
+  my ($server, $port, $nick, $pass) = @_;
 
   if ($port <= 0)
     {
@@ -4748,7 +4808,7 @@ sub cmd_server
   if ($Current_Server = find_server($server))
     {
       if (($Current_Server->{'conn'} & $CS_LOGIN)
-	  && $Current_Server->{'port'} == $port)
+					&& $Current_Server->{'port'} == $port)
 	{
 	  return;
 	}
@@ -4759,7 +4819,7 @@ sub cmd_server
       if ($Current_Server = add_server())
 	{
 	  $Current_Server->{'server'} = $server;
-	  $Current_Server->{'nick'}   = VIM::Eval('s:GetCurNick()');
+	  $Current_Server->{'nick'}   = $nick;
 	}
     }
 
@@ -7449,6 +7509,11 @@ sub parse_number
 	}
       unless ($Current_Server->{'motd'})
 	{
+	  # Nick may have been trimmed by server
+	  unless (is_me($to))
+	    {
+	      $Current_Server->{'nick'} = $to;
+	    }
 	  post_login_server($Current_Server);
 	}
     }
