@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 Feb 2004
-" Last Change: Fri, 28 May 2004 16:13:17 +0900 (JST)
+" Last Change: Mon, 10 Jan 2005 17:29:23 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -38,7 +38,7 @@
 "
 " Requirements:
 "   * Vim 6.2 or later with perl interface enabled
-"   * Perl (preferably 5.8 or later if you want multibyte feature)
+"   * Perl 5.6 or later (5.8 or later if you want multibyte feature)
 "
 " Options:
 "
@@ -233,7 +233,7 @@ endif
 let s:save_cpoptions = &cpoptions
 set cpoptions&
 
-let s:version = '0.8.7'
+let s:version = '0.8.8'
 let s:client  = 'VimIRC '.s:version
 
 "
@@ -244,7 +244,9 @@ let s:client  = 'VimIRC '.s:version
 " Start/Exit
 "
 
-command! -nargs=* VimIRC :call s:StartVimIRC(<q-args>)
+if !exists(':VimIRC') || s:debug
+  command -nargs=* VimIRC :call s:StartVimIRC(<q-args>)
+endif
 
 function! s:ObtainUserInfo(args)
   " Maybe called more than once
@@ -1437,7 +1439,7 @@ function! s:HandleKey(key)
     let comd = input(':')
     if strlen(comd)
       execute comd
-      if comd =~# '^\%(ls\|mes\)'
+      if comd =~# '^\%(ls\|mes\|ju\)'
 	let char = s:PromptKey('Hit any key to continue')
 	if char ==# ':'
 	  return s:HandleKey(a:key)
@@ -1571,10 +1573,10 @@ function! s:SendLine(inloop)
       endif
       let comd = 'PRIVMSG'
     elseif comd =~# '^\%(ME\|DESCRIBE\)$'
-      let comd = 'ACTION'
       if comd ==# 'ME'
 	let args = (strlen(b:query) ? b:query : b:channel).' '.args
       endif
+      let comd = 'ACTION'
     elseif comd =~# '^\%(\%(RE\)\=CONNECT\)$'
       let comd = 'SERVER'
     elseif comd =~# '^\%(LEAVE\)$'
@@ -1648,10 +1650,19 @@ function! s:SendLine(inloop)
     call s:VisitBuf_Server()
   endif
 
-  " Don't scroll down when awaying, to keep the context
-  if comd !~# 'AWAY' && (s:IsBufChannel() || s:IsBufChat() || s:IsBufServer())
-    call s:ExecuteSafe('keepjumps', 'normal! Gzb')
-    redraw
+  if 1
+    " Scroll down only if you are in talkative mood
+    if comd =~# '^\%(ACTION\)\=$' && strlen(line)
+	  \			  && (s:IsBufChannel() || s:IsBufChat())
+      call s:ExecuteSafe('keepjumps', 'normal! Gzb')
+      redraw
+    endif
+  else
+    " Don't scroll down when awaying, to keep the context
+    if comd !~# 'AWAY' && (s:IsBufChannel() || s:IsBufChat() || s:IsBufServer())
+      call s:ExecuteSafe('keepjumps', 'normal! Gzb')
+      redraw
+    endif
   endif
 
   call s:SetLastActive()
@@ -3283,7 +3294,7 @@ use Fcntl qw(O_RDONLY O_WRONLY O_CREAT O_EXCL O_APPEND O_TRUNC);
 our @Servers;		# IRC servers
 our $Current_Server;	# reference referring an element of @Servers
 our %Clients;		# clients connected over dcc protocol
-our ($RS, $WS);		# IO::Select object
+our ($RS, $WS);		# IO::Select objects
 
 our $From_Server;	# simple string value of the last sender's name@host
 
@@ -3338,7 +3349,7 @@ sub set_connected
 {
   if ($_[0])
     {
-      # Leave the CS_RECON flag here.  It'll be used to supress motd message
+      # Leave CS_RECON flag untouched.  It'll be used to supress motd message
       $Current_Server->{'conn'} &= ~$CS_QUIT;
       $Current_Server->{'conn'} |= $CS_LOGIN;
     }
@@ -3377,11 +3388,9 @@ sub open_server
       login_server($sref);
       return 1;
     }
-  else
-    {
-      irc_add_line('', "!: Could not establish connection: %s", $!);
-      return 0;
-    }
+
+  irc_add_line('', "!: Could not establish connection: %s", $!);
+  return 0;
 }
 
 sub login_server
@@ -3924,7 +3933,7 @@ sub do_auto_join
 	    }
 	  else
 	    {
-	      # Format: #chan2,#chan2
+	      # Format: #chan1,#chan2
 	      VIM::DoCommand("call s:Send_JOIN('JOIN', g:vimirc_autojoin)");
 	    }
 	}
