@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 Feb 2004
-" Last Change: Mon, 28 Feb 2005 15:33:14 +0900 (JST)
+" Last Change: Mon, 28 Feb 2005 22:41:03 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -288,7 +288,7 @@
 if exists('g:loaded_vimirc') || &compatible
   finish
 endif
-let s:version = '0.9.6'
+let s:version = '0.9.7'
 
 let s:debug = (s:version =~# '-devel$')
 if !s:debug
@@ -647,21 +647,22 @@ function! s:QuitVimIRC()
 endfunction
 
 function! s:QuitWhat(severe)
-  if a:severe || !exists('b:channel')
-    if s:GetConf_YN('Really quit VimIRC?')
-      call s:QuitVimIRC()
+  if a:severe || !strlen(s:GetVimVar('b:channel'))
+    " Don't confirm when quitting with "Q"
+    return (a:severe || s:GetConf_YN('Really quit VimIRC?'))
+	  \ ? s:QuitVimIRC() : 0
+  endif
+
+  if s:IsNick(b:channel)
+    if s:GetConf_YN('Really quit chat with '.b:channel.'?')
+      call s:QuitChat(b:channel)
     endif
   else
-    if s:IsNick(b:channel)
-      if s:GetConf_YN('Really quit chatting?')
-	call s:QuitChat(b:channel)
-      endif
-    else
-      if s:GetConf_YN('Really close channel '.b:channel.'?')
-	call s:Send_PART('PART', b:channel)
-      endif
+    if s:GetConf_YN('Really close channel '.b:channel.'?')
+      call s:Send_PART('PART', b:channel)
     endif
   endif
+  call s:MainLoop()
 endfunction
 
 function! s:MainLoop()
@@ -930,8 +931,8 @@ function! s:IsChannel(channel)
 endfunction
 
 function! s:IsNick(channel)
-  " To explain: negate (a:channel contains invalid characters)
-  return !(a:channel =~? '[^-0-9\\\[\]^`a-z{}]')
+  " To explain the latter: negate (a:channel contains invalid characters)
+  return (strlen(a:channel) && !(a:channel =~? '[^-0-9\\\[\]^`a-z{}]'))
 endfunction
 
 function! s:CanOpenChanServ()
@@ -1851,11 +1852,11 @@ function! s:HandleKey(key)
     call s:DoNormal(nr2char(2 * (char == ' ' ? 3 : 1)))
   elseif char == "\<C-N>" || char == "\<C-P>"
     call s:WalkThruChanServ(char == "\<C-N>")
-  elseif char == "\<C-B>" || char == "\<C-F>"
-	\ || char == "\<C-D>" || char == "\<C-U>"
-	\ || char == "\<C-E>" || char == "\<C-Y>"
-	\ || char == "\<C-O>" || char == "\<C-^>"
-	\ || char =~# '[-#$*+0;BEGHLMNW^behjklnw]'
+  elseif (  char == "\<C-B>" || char == "\<C-F>"
+	\|| char == "\<C-D>" || char == "\<C-U>"
+	\|| char == "\<C-E>" || char == "\<C-Y>"
+	\|| char == "\<C-O>" || char == "\<C-^>"
+	\|| char =~# '[-#$*+0;BEGHLMNW^behjklnw]')
     " One char commands
     call s:DoNormal(char)
   elseif char == "\t"
@@ -3008,7 +3009,9 @@ function! s:StrTrim(str, ...)
   let space = (!a:0 || a:1 =~ '^ \=$')
   let patrn = space ? '\s' : '\%(\s*\V'.a:1.'\m\s*\)'
 
-  return substitute(a:str, '\%(^'.patrn.'\+\|'.patrn.'\+$\)', '', 'g')
+  let str = substitute(a:str, '[[:cntrl:]]\+', '', 'g')	" just in case
+  let str = substitute(str, '\%(^'.patrn.'\+\|'.patrn.'\+$\)', '', 'g')
+  return str
 endfunction
 
 " Ditto
@@ -3956,11 +3959,13 @@ function! s:Send_NICK(comd, args)
   let nick = a:args
   if !strlen(a:args)
     let nick = s:Input('Enter a new nickname')
-    if !strlen(nick)
-      return
-    endif
   endif
-  call s:DoSend(a:comd, substitute(nick, '[[:blank:][:cntrl:]]\+', '-', 'g'))
+  if strlen(nick)
+    if nick =~ '[[:blank:][:cntrl:]]'
+      return s:HandlePromptKey('Invalid nickname: '.nick)
+    endif
+    call s:DoSend(a:comd, nick)
+  endif
 endfunction
 
 function! s:Send_PART(comd, args)
@@ -7337,6 +7342,7 @@ sub p_wallops
   if (my ($mesg) = (${$args} =~ /^:(.+)$/))
     {
       irc_chan_line('', "!%s!: %s", $from, $mesg);
+      vim_beep(2);
     }
 }
 
