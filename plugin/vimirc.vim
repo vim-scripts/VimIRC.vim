@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 Feb 2004
-" Last Change: Mon, 19 Apr 2004 10:10:50 +0900 (JST)
+" Last Change: Mon, 19 Apr 2004 20:52:14 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -19,6 +19,12 @@
 "     mode commands available)
 "   * multiple servers/channels connectivity
 "   * DCC SEND/CHAT functionalities
+"   * logging
+"   * command aliasing
+"   * auto-join channels on logon
+"   * auto-reconnect/rejoin after disconnect
+"   * auto-away
+"   * netsplit detection
 "
 "   A Drawback:
 "     VimIRC achieves real-time message reception by implementing its own main
@@ -189,6 +195,7 @@
 "     - auto-away
 "   - logging
 "   - netsplit detection (?)
+"   - command abbreviation (aliasing)
 "
 " Tips:
 "   1.	If you see extreme slowness in vim startup time due to this plugin,
@@ -206,7 +213,7 @@ endif
 let s:save_cpoptions = &cpoptions
 set cpoptions&
 
-let s:version = '0.8.1'
+let s:version = '0.8.2'
 let s:client  = 'VimIRC '.s:version
 " Set this to zero when releasing, which I'll occasionally forget, for sure
 let s:debug = 0
@@ -337,6 +344,8 @@ function! s:InitVars()
   call s:SetVarIntern('vimirc_logdir', expand('$HOME').'/.vimirc')
   let s:logdir = s:RegularizePath(s:logdir)
 
+  call s:SetVarIntern('vimirc_rcfile', s:logdir.'/.vimircrc')
+
   " Directory where incoming dcc files should go
   call s:SetVarIntern('vimirc_dccdir', s:logdir.'/dcc')
   let s:dccdir = s:RegularizePath(s:dccdir)
@@ -421,39 +430,40 @@ function! s:StartVimIRC(...)
     return
   endif
 
+  call s:RC_Load()
+
   call s:SetGlobVars()
-  call s:DoCommands()
-  call s:DoAutocmds()
-
+  call s:SetCmds()
+  call s:SetAutocmds()
   call s:SetEncoding()
+
   call s:PerlIRC()
+  call s:Cmd_SERVER(s:server)
 
-  call s:CmdServer(s:server)
   let s:opened = 1
-
   call s:MainLoop()
 endfunction
 
 function! s:QuitVimIRC()
-  call s:UndoCommands()
-  call s:UndoAutocmds()
+  call s:ResetCmds()
+  call s:ResetAutocmds()
   call s:ResetGlobVars()
   call s:QuitServers()
   call s:CloseVimIRC()
   let s:opened = 0
 endfunction
 
-function! s:DoCommands()
+function! s:SetCmds()
   delcommand VimIRC
   command! VimIRCQuit :call s:QuitVimIRC()
 endfunction
 
-function! s:UndoCommands()
+function! s:ResetCmds()
   delcommand VimIRCQuit
   command! -nargs=* VimIRC :call s:StartVimIRC()
 endfunction
 
-function! s:DoAutocmds()
+function! s:SetAutocmds()
   augroup VimIRC
     autocmd!
     " NOTE: Cannot use CursorHold to auto re-enter the loop: getchar() won't
@@ -471,7 +481,7 @@ function! s:DoAutocmds()
   augroup END
 endfunction
 
-function! s:UndoAutocmds()
+function! s:ResetAutocmds()
   autocmd! VimIRC
 endfunction
 
@@ -506,6 +516,58 @@ function! s:MainLoop()
       break
     endtry
   endwhile
+endfunction
+
+"
+" .vimircrc manipulation
+"
+
+function! s:RC_Load()
+  if filereadable(s:rcfile)
+    execute 'source' s:rcfile
+  endif
+endfunction
+
+function! s:RC_Open(force)
+  return (a:force || filereadable(s:rcfile)) && s:OpenBuf('1split', s:rcfile)
+endfunction
+
+function! s:RC_Close()
+  if s:SelectWindow(bufnr(s:rcfile)) >= 0
+    if &modified
+      silent! write!
+    endif
+    silent! close
+  endif
+endfunction
+
+function! s:RC_Varname(type, name)
+  return 'vimirc_'.a:type.'_'.a:name
+endfunction
+
+function! s:RC_Section(section)
+  if !search('^" '.a:section, 'w')
+    if !s:IsBufEmpty() && strlen(getline('$'))
+      call append('$', '')
+    endif
+    call append('$', '" '.a:section)
+    $
+  endif
+endfunction
+
+function! s:RC_Set(type, name, value)
+  call s:RC_Unset(a:type, a:name)
+  let varname = s:RC_Varname(a:type, a:name)
+  call append('.', 'let '.varname.' = "'.escape(a:value, '"\').'"')
+  let g:{varname} = a:value
+endfunction
+
+function! s:RC_Unset(type, name)
+  let varname = s:RC_Varname(a:type, a:name)
+  while search(varname.'\s*=', 'w')
+    delete _
+  endwhile
+  unlet! g:{varname}
 endfunction
 
 "
@@ -764,10 +826,13 @@ function! s:OpenBuf(comd, ...)
   " Avoid "not enough room" error
   let winminheight= &winminheight
   let winminwidth = &winminwidth
-  set winminheight=0
-  set winminwidth=0
+
+  set winminheight=0 winminwidth=0
+  setlocal noswapfile modifiable
   let v:errmsg = ''
+
   silent! execute a:comd.(a:0 && strlen(a:1) ? ' '.a:1 : '')
+
   let &winminheight = winminheight
   let &winminwidth  = winminwidth
   return !strlen(v:errmsg)
@@ -1371,7 +1436,7 @@ function! s:HandleKey(key)
     endif
     throw 'IMGONNAPOST'
   elseif char =~# '[/?]'
-    call s:CmdSearch(char)
+    call s:Cmd_SEARCH(char)
   elseif char == "\<CR>"
     if s:IsBufInfo()
       call s:EnterChanServ(0)
@@ -1438,7 +1503,7 @@ function! s:SetLastActive()
   let lastactive = s:lastactive
   let s:lastactive = localtime()
   " Clear the `away' status only if considered to be set
-  if s:lastactive - lastactive > s:autoawaytime
+  if s:lastactive >= lastactive + s:autoawaytime
     " I just don't want to call this perl code every time you type something
     call s:Send_GAWAY('GAWAY', '')
   endif
@@ -1454,12 +1519,17 @@ function! s:SendLine(loop)
   call s:SetCurChannel(b:channel)
 
   let line = s:StrTrim(getline('.'))
+  let expd = s:ExpandAlias(line)
+  if strlen(expd)
+    let line = expd
+  endif
+
   let comd = ''
   let args = ''
 
-  let rx = '^/\(\a\+\)\%(\s\+\(.\+\)\)\=$'
+  let rx = '^/\(\S\+\)\%(\s\+\(.\+\)\)\=$'
   if line =~ rx
-    " TODO: Allow abbreviated forms of commands
+    " TODO: Allow abbreviated forms of commands (done?)
     let comd = toupper(s:StrMatched(line, rx, '\1'))
     let args = s:StrMatched(line, rx, '\2')
 
@@ -1524,12 +1594,8 @@ function! s:SendLine(loop)
       endif
     endif
 
-    if comd ==# 'SET'
-      call s:CmdSet(args)
-    elseif comd ==# 'HELP'
-      call s:PrintHelp()
-    elseif comd ==# 'SERVER'
-      call s:CmdServer(args)
+    if exists('*s:Cmd_{comd}')
+      call s:Cmd_{comd}(args)
     else
       if s:IsConnected(s:server)
 	if exists('*s:Send_{comd}')
@@ -1568,7 +1634,7 @@ function! s:SendLine(loop)
 endfunction
 
 " "/SET option value"
-function! s:CmdSet(optval)
+function! s:Cmd_SET(optval)
   let numopt = 'autoaway autoawaytime log dccport'
   let stropt = 'winmode'
   let rx = '^\(\S\+\)\%(\s\+\(.\+\)\)\=$'
@@ -1610,7 +1676,7 @@ function! s:CmdSet(optval)
   call s:PromptKey('Hit any key to continue')
 endfunction
 
-function! s:CmdSearch(comd)
+function! s:Cmd_SEARCH(comd)
   let word = input(a:comd)
   if strlen(word)
     let @/ = word
@@ -1739,6 +1805,119 @@ function! s:UpdateList(loop)
 endfunction
 
 "
+" Aliasing
+"
+
+function! s:ExpandAlias(line)
+  let line = a:line
+  let rx = '^/\(\S\+\)\%(\s\+\(.\+\)\)\=$'
+  if a:line =~ rx
+    let varname = s:RC_Varname('alias', toupper(s:StrMatched(a:line, rx, '\1')))
+    if exists('g:{varname}')
+      let args = s:StrMatched(a:line, rx, '\2')
+      let line = g:{varname}.(strlen(args) ? ' '.args : '')
+    endif
+  endif
+  return line
+endfunction
+
+function! s:Cmd_ALIAS(line)
+  let rx = '^/\(\S\+\)\s\+\(.\+\)$'
+  if a:line =~ rx
+    if s:RC_Open(1)
+      call s:RC_Section('Aliases')
+      call s:RC_Set('alias', toupper(s:StrMatched(a:line, rx, '\1')),
+	    \					s:StrMatched(a:line, rx, '\2'))
+      call s:RC_Close()
+    endif
+  endif
+endfunction
+
+function! s:Cmd_UNALIAS(alias)
+  if s:RC_Open(0)
+    call s:RC_Unset('alias', toupper(substitute(a:alias, '^/', '', '')))
+    call s:RC_Close()
+  endif
+endfunction
+
+"
+" Help
+"
+
+function! s:Cmd_HELP(...)
+  if a:0 && a:1 ==? 'dcc'
+    return s:Cmd_DCCHELP()
+  endif
+
+  echohl Title
+  echo " VimIRC Help\n\n"
+  echo " Available commands:\n\n"
+  echohl None
+  echo "/server [host:port]"
+  echo "\tTry to connect with a new server.  Or reconnect the current server"
+  echo "\twhen no argument is given."
+  echo "/quit [reason]"
+  echo "\tDisconnect with the current server.  Synonym: exit."
+  echo "\n"
+  echo "/join channel(s) [key(s)]"
+  echo "\tJoin specified channels.  Use commas to separate multiple channels."
+  echo "/part [channel(s)] [message]"
+  echo "\tExit from the specified channels.  If channels are ommitted, exit"
+  echo "\tfrom the current channel.  Synonym: leave."
+  echo "\n"
+  echo "/topic [channel] [topic]"
+  echo "\tSet or show the current topic for channel."
+  echo "\n"
+  echo "/msg target message"
+  echo "\tSend a message to a nick/channel."
+  echo "message"
+  echo "\tSend a message to the current channel, or the nick currently"
+  echo "\tquerying with."
+  echo "\n"
+  echo "/query nick"
+  echo "\tStart a query session with a user."
+  echo "/query"
+  echo "\tClose it."
+  echo "\n"
+  echo "/action target message"
+  echo "\tSend a message to a nick/channel, playing some role."
+  echo "/me message"
+  echo "\tSend a message to the current channel/query target, playing some"
+  echo "\trole."
+  echo "\n"
+  echo "/set [option] [value]"
+  echo "\tSet or show internal option values.  List of settable options will"
+  echo "\tbe displayed if option is ommited."
+  echo "\n"
+  echo "/alias /new-command /blah blah blah"
+  echo "\tAdd a new command \"new-command\"."
+  echo "/unalias /new-command"
+  echo "\tRemove it."
+  echo "\n"
+  echo "/dcc help"
+  echo "\tShow a help message for DCC commands."
+  echo "\n"
+  call s:PromptKey('Hit any key to continue')
+endfunction
+
+function! s:Cmd_DCCHELP()
+  call s:EchoHL(" Available DCC commands:", 'Title')
+  echo "\n"
+  echo "/dcc send nick file"
+  echo "\tOffer DCC SEND to nick"
+  echo "/dcc chat nick"
+  echo "\tOffer DCC CHAT to, or accept pending offer from, nick"
+  echo "/dcc get [nick [file]]"
+  echo "\tAccept pending SEND offer from nick"
+  echo "/dcc close [type [nick]]"
+  echo "\tClose SEND/CHAT/GET connection with nick"
+  echo "/dcc list"
+  echo "\tList all active/pending DCC connections"
+  echo "\n"
+  call s:PromptKey('Hit any key to continue')
+endfunction
+
+"
 " Logging
 "
 
@@ -1860,7 +2039,7 @@ endfunction
 
 function! s:EchoHL(mesg, hlname)
   try
-    execute "echohl" a:hlname
+    execute 'echohl' a:hlname
     echo a:mesg
   finally
     echohl None
@@ -1868,7 +2047,7 @@ function! s:EchoHL(mesg, hlname)
 endfunction
 
 function! s:SearchLine(line)
-  return strlen(a:line) ? search('^\m'.escape(a:line, '*^$.~\').'$', 'w') : 0
+  return strlen(a:line) ? search('\m^'.escape(a:line, '$*.\^~').'$', 'w') : 0
 endfunction
 
 function! s:GetEnv(var)
@@ -2055,74 +2234,6 @@ function! s:BufTrim()
   while search('^\s*$', 'w') && line('$') > 1
     delete _
   endwhile
-endfunction
-
-"
-" Help
-"
-
-function! s:PrintHelp()
-  echohl Title
-  echo " VimIRC Help\n\n"
-  echo " Available commands:\n\n"
-  echohl None
-  echo "/server [host:port]"
-  echo "\tTry to connect with a new server.  Or reconnect the current server"
-  echo "\twhen no argument is given."
-  echo "/quit [reason]"
-  echo "\tDisconnect with the current server.  Synonym: exit."
-  echo "\n"
-  echo "/join channel(s) [key(s)]"
-  echo "\tJoin specified channels.  Use commas to separate multiple channels."
-  echo "/part [channel(s)] [message]"
-  echo "\tExit from the specified channels.  If channels are ommitted, exit"
-  echo "\tfrom the current channel.  Synonym: leave."
-  echo "\n"
-  echo "/topic [channel] [topic]"
-  echo "\tSet or show the current topic for channel."
-  echo "\n"
-  echo "/msg target message"
-  echo "\tSend a message to a nick/channel."
-  echo "message"
-  echo "\tSend a message to the current channel, or the nick currently"
-  echo "\tquerying with."
-  echo "\n"
-  echo "/query nick"
-  echo "\tStart a query session with a user."
-  echo "/query"
-  echo "\tClose it."
-  echo "\n"
-  echo "/action target message"
-  echo "\tSend a message to a nick/channel, playing some role."
-  echo "/me message"
-  echo "\tSend a message to the current channel/query target, playing some"
-  echo "\trole."
-  echo "\n"
-  echo "/set [option] [value]"
-  echo "\tSet or show internal option values.  List of settable options will"
-  echo "\tbe displayed if option is ommited"
-  echo "\n"
-  echo "/dcc help"
-  echo "\tShow a help message for DCC commands"
-  echo "\n"
-  call s:PromptKey('Hit any key to continue')
-endfunction
-
-function! s:PrintHelp_DCC()
-  call s:EchoHL(" Available DCC commands:", 'Title')
-  echo "\n"
-  echo "/dcc send nick file"
-  echo "\tOffer DCC SEND to nick"
-  echo "/dcc chat nick"
-  echo "\tOffer DCC CHAT to, or accept pending offer from, nick"
-  echo "/dcc get [nick [file]]"
-  echo "\tAccept pending SEND offer from nick"
-  echo "/dcc close [type [nick]]"
-  echo "\tClose SEND/CHAT/GET connection with nick"
-  echo "/dcc list"
-  echo "\tList all active/pending DCC connections"
-  echo "\n"
-  call s:PromptKey('Hit any key to continue')
 endfunction
 
 "
@@ -2431,7 +2542,7 @@ EOP
   call s:ResetPerlVars()
 endfunction
 
-function! s:CmdServer(server)
+function! s:Cmd_SERVER(server)
   let port = 0
   let server = strlen(a:server) ? a:server : s:GetVimVar('b:server')
   if !strlen(server)
@@ -2697,7 +2808,7 @@ function! s:Send_DCC(comd, args)
   if a:args =~ rx
     let type = toupper(s:StrMatched(a:args, rx, '\1'))
     if type ==# 'HELP'
-      return s:PrintHelp_DCC()
+      return s:Cmd_DCCHELP()
     elseif type =~# '^\%(CLOSE\|SEND\|GET\|CHAT\)$'
       let nick = s:StrMatched(a:args, rx, '\2')
       let desc = s:StrMatched(a:args, rx, '\3')
@@ -3701,7 +3812,7 @@ sub do_auto_away
   my ($sref, $time) = @_;
   my $lastactive = vim_getvar('s:lastactive');
 
-  if ($time - $lastactive > vim_getvar('s:autoawaytime'))
+  if ($time >= $lastactive + vim_getvar('s:autoawaytime'))
     {
       irc_add_line('', "*: Auto-awaying...");
       $sref->{'away'} = sprintf("I think I'm gone (been idle since %s).",
@@ -3715,7 +3826,7 @@ sub do_auto_ping
 {
   my ($sref, $time) = @_;
 
-  if ($time - $sref->{'lastping'} >= 90)
+  if ($time >= $sref->{'lastping'} + 90)
     {
       irc_send("PING %d", $time);
       $sref->{'lastping'} = $time;
@@ -5409,10 +5520,10 @@ sub del_splitnick
   if (my $ns = find_netsplit($nick, $chan))
     {
       my $split = $ns->{'split'};
-      my $tojoin= scalar(keys(%{$ns->{'nicks'}}));
 
       unless ($ns->{'joins'}++)
 	{
+	  my $tojoin = scalar(keys(%{$ns->{'nicks'}}));
 	  irc_add_line('', "*: Netjoin detected: %s, %d %s to join",
 			    $split, $tojoin, ($tojoin > 1 ? 'are' : 'is'));
 	}
