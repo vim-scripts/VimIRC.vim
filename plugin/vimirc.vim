@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 Feb 2004
-" Last Change: Mon, 04 Apr 2005 22:21:53 +0900 (JST)
+" Last Change: Wed, 06 Apr 2005 21:46:08 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -31,7 +31,7 @@
 "   A Drawback:
 "     VimIRC achieves real-time message reception by implementing its own main
 "     loop.  Therefore, while you are out of it, VimIRC has no way to get new
-"     messages.
+"     messages, unless you move the cursor periodically.
 "
 "     So my recommendation is, use a shortcut which creates a VimIRC-dedicated
 "     instance of Vim, where you do not initiate normal editing sessions (See
@@ -328,7 +328,7 @@
 if exists('g:loaded_vimirc') || &compatible
   finish
 endif
-let s:version = '0.9.22'
+let s:version = '0.9.23'
 
 let s:debug = (s:version =~# '-devel$')
 if !s:debug
@@ -608,7 +608,7 @@ function! s:SetAutocmds()
     autocmd!
     " NOTE: Cannot use CursorHold to auto re-enter the loop: getchar() won't
     " get a char since key inputs will never be waited after that event.
-    execute 'autocmd CursorHold' s:bufname.'* call s:NotifyOffline()'
+    execute 'autocmd CursorHold * call s:NotifyOffline()'
     execute 'autocmd BufHidden' s:bufname_channel.'* call s:PreCloseBuf_Channel()'
     execute 'autocmd BufHidden' s:bufname_chat.'* call s:PreCloseBuf_Chat()'
     execute 'autocmd BufHidden' s:bufname_list.'* call s:PreCloseBuf_List()'
@@ -699,6 +699,7 @@ function! s:QuitWhat(severe)
     return s:QuitVimIRC()
   endif
 
+  " NOTE: `server' could get invalid value
   let server = s:GetVimVar('b:server')
   let channel= s:GetVimVar('b:channel')
   call s:SetCurServer(server)
@@ -712,7 +713,7 @@ function! s:QuitWhat(severe)
       call s:QuitChat(channel)
     endif
   elseif s:IsConnected()
-    if s:Confirm_YN('Really disconnect with server '.server)
+    if s:Confirm_YN('Really disconnect with server '.s:server)
       call s:Send_QUIT('QUIT', '')
     endif
   else
@@ -720,8 +721,6 @@ function! s:QuitWhat(severe)
       return s:QuitVimIRC()
     endif
   endif
-
-  call s:MainLoop()
 endfunction
 
 function! s:MainLoop()
@@ -743,7 +742,7 @@ function! s:MainLoop()
 	  " Pressed the same key for a long time.  Just ignore it.
 	endtry
       endif
-      if s:DoTimer(!s:RecvData())
+      if s:DoTimer()
 	break
       endif
     endwhile
@@ -1044,7 +1043,7 @@ endfunction
 
 " Change highlighting of the current buffer (later)
 function! s:ChangeChanServ(auto)
-  if s:in_loop && !((a:auto && s:autocmd_disabled) || s:current_changed)
+  if !((a:auto && s:autocmd_disabled) || s:current_changed)
     let s:current_changed = s:IsBufType_ChanServ(a:auto
 	  \					  ? expand('<abuf>') + 0
 	  \					  : bufnr('%'))
@@ -1059,11 +1058,9 @@ function! s:EnterChanServ(split)
     let server = s:StrMatch(line, rx, '\2')
     call s:OpenChanServ(channel, (!strlen(server) ? channel : server), a:split)
   endif
-  call s:MainLoop()
 endfunction
 
 function! s:OpenChanServ(channel, server, split)
-  let save_server = s:server
   let s:server = a:server
   let s:split = a:split
 
@@ -1077,7 +1074,6 @@ function! s:OpenChanServ(channel, server, split)
     call s:OpenBuf_Server()
   endif
 
-  let s:server = save_server
   let s:split = 0
 endfunction
 
@@ -1472,21 +1468,26 @@ function! s:ModifyBuf(modify, ...)
   endif
 endfunction
 
-function! s:PeekBuf(peek, orgbuf)
+function! s:PeekBuf(peek, orgwin)
   if a:peek
-    call s:TogglePeekMode(a:peek)
-    call s:CanOpenChanServ()
-    call s:OpenBuf('vertical 1split')
+    call s:PrePeekBuf()
   else
-    call s:ExecuteSilent('close!')
-    call s:BufVisit(a:orgbuf)
-    call s:TogglePeekMode(a:peek)
+    call s:PostPeekBuf(a:orgwin)
   endif
 endfunction
 
-function! s:TogglePeekMode(peek)
-  let s:autocmd_disabled = a:peek
-  let &equalalways = !a:peek
+function! s:PrePeekBuf()
+  let s:autocmd_disabled = 1
+  let &equalalways = 0
+  call s:CanOpenChanServ()  " XXX: is this necessary?
+  call s:OpenBuf('vertical 1split')
+endfunction
+
+function! s:PostPeekBuf(orgwin)
+  call s:ExecuteSilent('close!')
+  call s:WinVisit(a:orgwin)
+  let &equalalways = (s:in_loop || s:equalalways)
+  let s:autocmd_disabled = 0
 endfunction
 
 "
@@ -1494,21 +1495,26 @@ endfunction
 "
 
 function! s:RegistMap(key, func, ...)
-  let list = a:0 ? a:1 : 'n'
-  while strlen(list)
-    let mode = s:StrDivide(list, 1)
-    execute mode.'noremap <buffer> <silent>' (a:key)
-	  \ (mode == 'i' ? '<Esc>' : '').':'.
-	  \ (mode != 'v' ? '<C-U>' : '').'call <SID>'.a:func.'<CR>'
-    let list = s:StrDivide(list, 2)
+  let keylist = a:key
+  while strlen(keylist)
+    let key = s:StrDivide(keylist, 1)
+    let modelist = a:0 ? a:1 : 'n'
+    while strlen(modelist)
+      let mode = s:StrDivide(modelist, 1)
+      execute mode.'noremap <buffer> <silent>' (key)
+	    \ (mode == 'i' ? '<Esc>' : '').':'.
+	    \ (mode != 'v' ? '<C-U>' : '').'call <SID>'.a:func.'<CR>'
+      let modelist = s:StrDivide(modelist, 2)
+    endwhile
+    let keylist = s:StrDivide(keylist, 2)
   endwhile
 endfunction
 
-function! s:UnregistMap(keys)
-  let keys = a:keys
-  while strlen(keys)
-    call s:ExecuteSilent('unmap <buffer> '.s:StrDivide(keys, 1))
-    let keys = s:StrDivide(keys, 2)
+function! s:UnregistMap(key)
+  let keylist = a:key
+  while strlen(keylist)
+    call s:ExecuteSilent('unmap <buffer> '.s:StrDivide(keylist, 1))
+    let keylist = s:StrDivide(keylist, 2)
   endwhile
 endfunction
 
@@ -1521,23 +1527,12 @@ function! s:DoSettings()
   setlocal wrap
 
   call s:RegistMap('<Space>', 'MainLoop()')
-  call s:RegistMap('<CR>', 'OpenLink(0)')
-  call s:RegistMap('<C-CR>', 'OpenLink(1)')
-  call s:RegistMap('<S-CR>', 'OpenLink(1)')
-  call s:RegistMap('<C-W><CR>', 'OpenLink(1)')
-  call s:RegistMap('<C-W><C-CR>', 'OpenLink(1)')
-  call s:RegistMap('a', 'OpenBuf_Command()')
-  call s:RegistMap('A', 'OpenBuf_Command()')
-  call s:RegistMap('i', 'OpenBuf_Command()')
-  call s:RegistMap('I', 'OpenBuf_Command()')
-  call s:RegistMap('o', 'OpenBuf_Command()')
-  call s:RegistMap('O', 'OpenBuf_Command()')
-  call s:RegistMap('p', 'Beep(1)', 'n,v')
-  call s:RegistMap('P', 'Beep(1)', 'n,v')
-  call s:RegistMap('q', 'QuitWhat(0)')
-  call s:RegistMap('Q', 'QuitWhat(1)')
-  call s:RegistMap('ZZ', 'QuitWhat(0)')
-  call s:RegistMap('ZQ', 'QuitWhat(1)')
+  call s:RegistMap('<CR>', 'HandleEnter(0)')
+  call s:RegistMap('<C-CR>,<S-CR>,<C-W><CR>,<C-W><C-CR>', 'HandleEnter(1)')
+  call s:RegistMap('a,A,i,I,o,O', 'OpenBuf_Command()')
+  call s:RegistMap('p,P', 'Beep(1)', 'n,v')
+  call s:RegistMap('q,ZZ', 'QuitWhat(0)')
+  call s:RegistMap('Q,ZQ', 'QuitWhat(1)')
   call s:RegistMap('<C-L>', 'ResizeWin(1)')
   call s:RegistMap('<C-N>', 'OpenNextChanServ(1, 0)')
   call s:RegistMap('<C-P>', 'OpenNextChanServ(0, 0)')
@@ -1639,10 +1634,6 @@ function! s:InitBuf_Info(bufname)
   call s:DoSettings()
   call s:DoSyntax_Info()
   setlocal nowrap
-  call s:RegistMap('<CR>', 'EnterChanServ(0)')
-  call s:RegistMap('<C-CR>', 'EnterChanServ(1)')
-  call s:RegistMap('<S-CR>', 'EnterChanServ(1)')
-  call s:RegistMap('<C-W><CR>', 'EnterChanServ(1)')
 
   call s:SetBufNum(a:bufname)
 endfunction
@@ -1946,11 +1937,12 @@ function! s:CloseWin_What(cond)
     " TODO: Accept arguments and/or multiple conditions?
     if {a:cond}()
       " XXX: Vim crashes here sometimes
-      if !s:WinClose()
+      if s:WinClose()
+	continue
+      else
 	let retval = 0
 	break
       endif
-      continue
     elseif winnr() == 1
       break
     endif
@@ -2041,6 +2033,19 @@ endfunction
 " Providing some user interaction
 "
 
+function! s:HandleAt(comd)
+  if a:comd =~ '[:=]$'
+    let ex = (a:comd =~ ':$')
+    let comd = ex ? histget('@', -1) : s:DoInput(0, '=', '')
+    " Do histadd for the expression?
+    if s:DoIterate(ex, comd, s:ComputeCount(a:comd))
+      call s:PromptEnter(2)
+    endif
+  else
+    call s:DoNormal(a:comd, 1)
+  endif
+endfunction
+
 function! s:HandleEnter(shifted, ...)
   if s:IsBufType_Info()
     return s:EnterChanServ(a:shifted)
@@ -2074,7 +2079,7 @@ function! s:HandleKey(key)
     call s:DoNormal(char)
   elseif char =~# '^[ p]$'	" scroll forward/backward
     call s:DoNormal(nr2char(2 * (char == ' ' ? 3 : 1)))
-  elseif char =~# "^[zgftFTm`'Z]$"
+  elseif s:Is2KeyCmd(char)
     " Commands which take a second char
     call s:HandleMultiKey(char, 0)
   elseif (char + 0) || char == "\<C-W>"
@@ -2099,7 +2104,7 @@ function! s:HandleKey(key)
     else
       call s:Sort{char ==# 'o' ? 'Select' : 'Reverse'}()
     endif
-  elseif char =~# '^[AIOaio]$'
+  elseif char =~? '^[AIO]$'
     if s:IsBufType_Command() && char =~# '^[AIa]$'
       " Position cursor at an appropriate place
       if char ==# 'I'
@@ -2132,11 +2137,12 @@ function! s:HandleMultiKey(char, multi)
   let comd = a:char
   let cnt = (a:char + 0)
   let ctrl_w = s:IsCtrl_W(a:char)
+  let multi = a:multi
 
   while 1
     call s:ShowCmd(comd)
     let char = s:GetChar(0)
-    if (char =~# '^[[:escape:]]\=$') || (a:multi && !cnt && s:IsZero(char))
+    if (char =~# '^[[:escape:]]\=$') || (multi && !cnt && s:IsZero(char))
       let comd = ''
       if s:IsZero(char)
 	call s:Beep(1)
@@ -2151,18 +2157,21 @@ function! s:HandleMultiKey(char, multi)
     endif
 
     " Continue if it is a number or <C-W>
-    if !(a:multi && strlen(comd)
-	  \ && ((char >= '0' && char <= '9') || s:IsCtrl_W(char) && !ctrl_w))
+    if !(multi && strlen(comd)) || (s:IsCtrl_W(char) && ctrl_w)
       break
     endif
 
-    if s:IsCtrl_W(char)
+    if (char >= '0' && char <= '9')
       " `cnt' is a mere indicator which shows that user is currently typing
       " count
+      let cnt = 1
+    elseif s:IsCtrl_W(char)
       let cnt = 0
       let ctrl_w = 1
-    elseif !cnt
-      let cnt = 1
+    elseif s:Is2KeyCmd(char)
+      let multi = 0
+    else
+      break
     endif
   endwhile
 
@@ -2171,20 +2180,16 @@ function! s:HandleMultiKey(char, multi)
     return
   endif
 
-  if ctrl_w
-    if char == "\<CR>" || char == "\<C-CR>" || char == "\<S-CR>"
-      call s:HandleEnter(1, s:ComputeCount(comd))
-    elseif char =~? '^[NP]$'
-      " XXX: Overriding Vim's <C-W>p, which isn't very useful because of
-      " redrawing of nicks and info-bar windows.
-      call s:HandleNextChanServ(comd)
-    else
-      call s:DoNormal(comd)
-    endif
-  elseif comd =~# '^Z[ZQ]$'
-    call s:QuitWhat(comd[1] ==# 'Q')
-  elseif char =~# '^[]$'
+  if char == "\<CR>" || char == "\<C-CR>" || char == "\<S-CR>"
+    call s:HandleEnter((ctrl_w || char != "\<CR>"), s:ComputeCount(comd))
+  elseif char =~# '^[]$' || (ctrl_w && char =~? '^[NP]$')
+    " XXX: Overriding Vim's <C-W>p, which isn't very useful because of
+    " redrawing of nicks and info-bar windows.
     call s:HandleNextChanServ(comd)
+  elseif comd =~ '@.$'
+    call s:HandleAt(comd)
+  elseif comd =~# 'Z[ZQ]$'
+    call s:QuitWhat(comd =~# 'Q$')
   else
     call s:DoNormal(comd, 1)
   endif
@@ -2431,7 +2436,10 @@ function! s:SelectNickAction() range
     unlet! s:channel
   endtry
 
-  call s:MainLoop()
+  if !s:in_loop
+    call s:SetLastActive()
+    call s:MainLoop()
+  endif
 endfunction
 
 function! s:SelectNickOpVoice(nicks)
@@ -2729,10 +2737,14 @@ function! s:ExpandCmd(comd)
       let comd = 'GQUIT'
     elseif comd =~# '^H\%[EL]$'
       let comd = 'HELP'
+    elseif comd =~# '^INF\=$'
+      let comd = 'INFO'
     elseif comd =~# '^J\%[OI]$'
       let comd = 'JOIN'
     elseif comd =~# '^L\%[IS]$'
       let comd = 'LIST'
+    elseif comd =~# '^MOT\=$'
+      let comd = 'MOTD'
     elseif comd =~# '^NA\%[ME]$'
       let comd = 'NAMES'
     elseif comd =~# '^NIC\=$'
@@ -3071,8 +3083,6 @@ function! s:OpenLink(split, ...)
     " Advance cursor if user selected nothing: this is called via <CR> key
     call s:DoNormal((a:0 ? a:1 : v:count1)."\<CR>")
   endif
-
-  call s:MainLoop()
 endfunction
 
 "
@@ -3167,10 +3177,12 @@ endfunction
 
 function! s:NotifyOffline()
   call s:HiliteClear()
-  echo s:IsSockOpen() ? s:IsBufType_Command()
-	\		? 'Hitting <CR> will send out the current line'
-	\		: 'Hit <Space> to get online'
-	\	      : 'Do /SERVER to get connected'
+  if s:IsBufType_IRC()
+    echo s:IsSockOpen() ? s:IsBufType_Command()
+	  \		    ? 'Hitting <CR> will send out the current line'
+	  \		    : 'Hit <Space> to get online'
+	  \		: 'Do /SERVER to get connected'
+  endif
   if s:in_loop
     if s:debug
       call s:EchoHL('You have to consider seriously why you are seeing'.
@@ -3178,6 +3190,8 @@ function! s:NotifyOffline()
     endif
     let s:in_loop = 0
   endif
+
+  call s:DoTimer()
 endfunction
 
 function! s:GetBufTitle()
@@ -3384,17 +3398,13 @@ function! s:Beep(times)
   try
     let errorbells = &errorbells
     let visualbell = &visualbell
-
-    let col  = col('.')
-
     set errorbells
     set novisualbell
-    normal! 0
 
     let i = 1
     while i <= a:times
-      normal! h
-      if (a:times - i)  " do not sleep for the last time
+      call s:DoNormal("\<Esc>")
+      if (a:times - i)  " do not sleep in the final round
 	sleep 250 m
       endif
       let i = i + 1
@@ -3402,7 +3412,6 @@ function! s:Beep(times)
   finally
     let &errorbells = errorbells
     let &visualbell = visualbell
-    call cursor(0, col)
   endtry
 endfunction
 
@@ -3461,6 +3470,12 @@ function! s:ExecuteLoud(comd)
 
     " XXX: Vim sometimes echoes just "\r\n"
     let loud = (strlen(@") && @" !~ '^[\r\n]\+$')
+    if !loud && strlen(@")
+      if s:debug
+	echomsg 'Vim murmured:' @"
+      endif
+      call s:RedrawScreen(0)
+    endif
   finally
     let &more = save_more
     let @" = save_reg
@@ -3490,6 +3505,22 @@ endfunction
 
 function! s:DoInsert(append)
   execute 'startinsert'.(a:append ? '!' : '')
+endfunction
+
+function! s:DoIterate(ex, comd, times)
+  let loud = 0
+  if strlen(a:comd)
+    let i = 1
+    while i <= a:times
+      if a:ex
+	let loud = s:ExecuteLoud(a:comd)
+      else
+	call s:DoNormal(a:comd, 1)
+      endif
+      let i = i + 1
+    endwhile
+  endif
+  return loud
 endfunction
 
 function! s:DoNormal(comd, ...)
@@ -3787,17 +3818,17 @@ function! s:StrSquash(str, ...)
   return substitute(a:str, patrn.'\+', '', 'g')
 endfunction
 
-function! s:StrMultiply(from, cnt)
+function! s:StrMultiply(from, times)
   " Super cool logic entirely copied from Chalice
   let to = ''
   let from = a:from
-  let cnt = a:cnt
-  while cnt
-    if cnt % 2
+  let times = a:times
+  while times
+    if times % 2
       " This is binary addition in actuality, performed with strings
       let to = to.from
     endif
-    let cnt = cnt / 2
+    let times = times / 2
     let from = from.from
   endwhile
   return to
@@ -3823,6 +3854,10 @@ function! s:EscapeQuote(str)
 endfunction
 
 " Confirmation functions
+
+function! s:Is2KeyCmd(char)
+  return (a:char =~# "^[zgftFTm`'@Z]$")
+endfunction
 
 function! s:IsCtrl_W(key)
   " Can accept both key code and char
@@ -4086,7 +4121,7 @@ endfunction
 
 " Function calls should be as few as possible for better performance
 function! s:HiliteColumn(...)
-  silent! execute 'match '.(a:0 ? a:1 : s:hl_cursor).' /\%#\s*\S*/'
+  silent! execute 'match' (a:0 ? a:1 : s:hl_cursor) '/\%#\s*\S*/'
   redraw
 endfunction
 
@@ -4201,28 +4236,29 @@ EOP
   call setbufvar(bufnum, 'updating', 0)
 endfunction
 
-function! s:DoTimer(exit)
-  let lasttime = localtime()
-  if !(lasttime > s:lasttime || a:exit)
-    " If a:exit is true, i.e., the connection was lost, do NOT exit here: we
-    " should update the infobar to mark the server as dead.
-    return a:exit
+function! s:DoTimer()
+  let lasttime = s:RecvData()
+  if lasttime
+    if lasttime <= s:lasttime
+      " If lasttime is zero, i.e., the connection was lost, do NOT exit here:
+      " we should update the infobar to mark the server as dead.
+      return 0
+    endif
+    let s:lasttime = lasttime
   endif
-
-  let s:lasttime = lasttime
   if s:current_changed
     call s:SetCurChanServ()
   endif
 
   perl <<EOP
 {
-  do_timer(scalar(VIM::Eval('l:lasttime')));
+  do_timer(scalar(VIM::Eval('s:lasttime')));
 }
 EOP
   call s:SetTitleBar()
   call s:RedrawStatus(1)
 
-  return a:exit
+  return !lasttime
 endfunction
 
 function! s:QuitChat(nick)
@@ -4279,8 +4315,12 @@ function! s:SetCurChanServ()
   if ($Current_ChanServ != $bufnum)
     {
       $Current_ChanServ = $bufnum;
-      VIM::DoCommand('call s:HiliteBuffer()');
       set_info($Current_Server, $INFO_UPDATE);
+
+      if (VIM::Eval('s:in_loop'))
+	{
+	  VIM::DoCommand('call s:HiliteBuffer()');
+	}
     }
 }
 EOP
@@ -4378,10 +4418,10 @@ function! s:GetBufNum_Next(forward, cnt)
     {
       my $first = $chanserv[0];
       my $next	= $first;
+      my $count = VIM::Eval('a:cnt') % scalar(@chanserv);
 
-      if ($#chanserv > 0)
+      if ($#chanserv > 0 && $count)
 	{
-	  my $count = VIM::Eval('a:cnt') % scalar(@chanserv);
 
 	  if (VIM::Eval('a:forward'))
 	    {
@@ -4462,7 +4502,7 @@ EOP
 endfunction
 
 function! s:RecvData()
-  let retval = 1
+  let retval = localtime()
 
   perl <<EOP
 {
@@ -5229,7 +5269,7 @@ sub set_curserver
 sub pre_put_line
 {
   my ($type, $args) = @_;
-  my $orgbuf= vim_bufnr();
+  my $orgwin= vim_winnr();
   my $peek  = !&{'vim_visit_'.$type}(@{$args});
 
   if ($peek)
@@ -5237,7 +5277,7 @@ sub pre_put_line
       vim_peekbuf(1, 0);
       &{'vim_open_'.$type}(@{$args});
     }
-  return ($orgbuf, $peek);
+  return ($orgwin, $peek);
 }
 
 sub irc_put_line
@@ -5253,7 +5293,7 @@ sub irc_put_line
 
 sub post_put_line
 {
-  my ($cref, $orgbuf, $peek) = @_;
+  my ($cref, $orgwin, $peek) = @_;
 
   if ($cref->{'bufnum'} < 0)
     {
@@ -5266,59 +5306,62 @@ sub post_put_line
     {
       set_info($cref, $INFO_HASNEW);
       set_info($Current_Server, $INFO_UPDATE);
-      vim_peekbuf(0, $orgbuf);
+      vim_peekbuf(0, $orgwin);
     }
-  elsif (!$Current_Server->{'away'})
+  else
     {
-      # Shouldn't scroll down nor beep while you're away
-      vim_notifyentry();
+      unless ($Current_Server->{'away'} || $cref == $Current_Server->{'list'})
+	{
+	  # Shouldn't scroll down nor beep while you're away
+	  vim_notifyentry();
+	}
+      vim_winvisit($orgwin);
     }
-
-  vim_bufvisit($orgbuf);
 }
 
 sub irc_chan_line
 {
   my $chan  = shift;
   my $cref  = is_chan($chan) ? find_chan($chan) : undef;
-  my ($orgbuf, $peek);
+  my ($orgwin, $peek);
 
   if ($cref)
     {
-      ($orgbuf, $peek) = pre_put_line('chan', [ $chan ]);
+      ($orgwin, $peek) = pre_put_line('chan', [ $chan ]);
     }
   else
     {
       $cref = $Current_Server;
-      ($orgbuf, $peek) = pre_put_line('serv');
+      ($orgwin, $peek) = pre_put_line('serv');
     }
 
   irc_put_line(\@_);
-  post_put_line($cref, $orgbuf, $peek);
+  post_put_line($cref, $orgwin, $peek);
 }
 
 sub irc_chat_line
 {
   my $nick  = shift;
   my $cref  = find_chat($nick, $Current_Server);
-  my ($orgbuf, $peek);
+  my ($orgwin, $peek);
 
   unless ($cref)
     {
       $cref = add_chat($nick, $Current_Server);
     }
 
-  ($orgbuf, $peek) = pre_put_line('chat',
+  ($orgwin, $peek) = pre_put_line('chat',
 				    [ $nick, $Current_Server->{'server'} ]);
   irc_put_line(\@_);
-  post_put_line($cref, $orgbuf, $peek);
+  post_put_line($cref, $orgwin, $peek);
 }
 
 sub irc_list_line
 {
-  pre_put_line('list');
+  my ($orgwin) = pre_put_line('list');
 
   $curbuf->Append($curbuf->Count(), sprintf("%-22s %5d %s", @_));
+  post_put_line($Current_Server->{'list'}, $orgwin);
 }
 
 sub irc_recv
@@ -5404,6 +5447,7 @@ our $INFO_HASNEW = 0x02;
 sub update_info
 {
   my $orgbuf = vim_bufnr();
+  my $orgwin = vim_winnr();
   # TODO: Preserve previous window (?)
 
   if (my $opened = vim_open_info())
@@ -5477,7 +5521,15 @@ sub update_info
 	  $curwin->Cursor($orgln, 0);
 	}
       vim_modifybuf(0);
-      vim_bufvisit($orgbuf);
+
+      if ($opened > 0)
+	{
+	  vim_winvisit($orgwin);
+	}
+      else
+	{
+	  vim_bufvisit($orgbuf);
+	}
     }
 }
 
@@ -6052,13 +6104,13 @@ sub dcc_chat_line
 {
   my ($dcc, $itsme) = @_;
   my $cref = find_chat("=$dcc->{'nick'}", $dcc->{'iserver'});
-  my ($orgbuf, $peek);
+  my ($orgwin, $peek);
 
-  ($orgbuf, $peek) = pre_put_line('chat', [ "=$dcc->{'nick'}",
+  ($orgwin, $peek) = pre_put_line('chat', [ "=$dcc->{'nick'}",
 					      $dcc->{'iserver'}->{'server'} ]);
 
   dcc_put_line($dcc, $itsme);
-  post_put_line($cref, $orgbuf, $peek);
+  post_put_line($cref, $orgwin, $peek);
 
   unless ($dcc->{'iserver'}->{'away'} || $itsme)
     {
@@ -8272,6 +8324,7 @@ sub vim_visit_list
 sub vim_open_chan
 {
   VIM::DoCommand('call s:OpenBuf_Channel("'.do_escape($_[0]).'")');
+  VIM::DoCommand('$');
 }
 
 sub vim_visit_chan
@@ -8297,6 +8350,7 @@ sub vim_visit_nicks
 sub vim_open_chat
 {
   VIM::DoCommand('call s:OpenBuf_Chat("'.do_escape($_[0]).'", "'.$_[1].'")');
+  VIM::DoCommand('$');
 }
 
 sub vim_visit_chat
@@ -8319,6 +8373,10 @@ sub vim_bufvisit
   return scalar(VIM::Eval("s:BufVisit($_[0])"));
 }
 
+sub vim_winvisit
+{
+  VIM::DoCommand("call s:WinVisit($_[0])");
+}
 sub vim_modifybuf
 {
   VIM::DoCommand("call s:ModifyBuf($_[0])");
