@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 Feb 2004
-" Last Change: Sat, 19 Feb 2005 18:33:40 +0900 (JST)
+" Last Change: Sun, 27 Feb 2005 02:52:56 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -285,7 +285,7 @@
 if exists('g:loaded_vimirc') || &compatible
   finish
 endif
-let s:version = '0.9.4'
+let s:version = '0.9.5'
 
 let s:debug = (s:version =~# '-devel$')
 if !s:debug
@@ -450,7 +450,7 @@ function! s:InitVars()
 
   let s:client  = 'VimIRC '.s:version
   " Set up the names of buffers we use
-  call s:InitBufVars()
+  call s:InitBufNames()
   " Init system variables
   call s:ResetSysVars()
 
@@ -491,16 +491,6 @@ function! s:InitVars()
   call s:OptSet('vimirc_autoaway', 0)
   " Threshold time for you to be marked `away'.  MUST be in seconds
   call s:OptSet('vimirc_autoawaytime', (60 * 30))
-endfunction
-
-function! s:InitBufVars()
-  let s:bufname = '_VimIRC_'
-  let list = 'info server list channel nicks command chat'
-  while strlen(list)
-    let type = matchstr(list, '^\S\+')
-    let s:bufname_{type} = s:bufname.toupper(type).'_'
-    let list = substitute(list, '^\S\+\s*', '', '')
-  endwhile
 endfunction
 
 function! s:SetSysVars()
@@ -580,6 +570,7 @@ function! s:SetAutocmds()
     execute 'autocmd BufHidden' s:bufname_server.'* call s:PreCloseBuf_Server()'
     execute 'autocmd BufWinEnter' s:bufname_channel.'* call s:PostOpenBuf_Channel()'
     execute 'autocmd BufWinEnter' s:bufname_chat.'* call s:PostOpenBuf_Chat()'
+    execute 'autocmd BufWinEnter' s:bufname_list.'* call s:PostOpenBuf_List()'
     execute 'autocmd BufWinEnter' s:bufname_server.'* call s:PostOpenBuf_Server()'
   augroup END
 endfunction
@@ -663,24 +654,20 @@ function! s:MainLoop()
     echo ''
 
     while 1
-      try
-	call s:HandleKey(getchar(0))
-	if s:DoTimer(!s:RecvData())
-	  break
-	endif
-      catch /^IMGONNA/
-	" Get out of the loop
-	" NOTE: You cannot see new messages posted while posting
+      call s:HandleKey(getchar(0))
+      if s:DoTimer(!s:RecvData())
 	break
-      catch /^Vim:Interrupt$/
-	if 1 && s:IsBufCommand()
-	  startinsert
-	endif
-	break
-      catch
-	echoerr v:exception
-      endtry
+      endif
     endwhile
+  catch /^IMGONNA/
+    " Get out of the loop
+    " NOTE: You cannot see new messages posted while posting
+  catch /^Vim:Interrupt$/
+    if 1 && s:IsBufCommand()
+      startinsert
+    endif
+  catch
+    echoerr v:exception
   finally
     call s:HiliteClear()
     let s:inside_loop = 0
@@ -799,6 +786,16 @@ function! s:DelBufNum(bufnum)
   unlet! s:bufnum_{bufname(a:bufnum)}
 endfunction
 
+function! s:InitBufNames()
+  let s:bufname = '_VimIRC_'
+  let list = 'info server list channel nicks command chat'
+  while strlen(list)
+    let type = matchstr(list, '^\S\+')
+    let s:bufname_{type} = s:bufname.toupper(type).'_'
+    let list = substitute(list, '^\S\+\s*', '', '')
+  endwhile
+endfunction
+
 function! s:GenBufName_Info()
   return s:bufname_info
 endfunction
@@ -845,7 +842,7 @@ endfunction
 function! s:IsBufChanServ(...)
   let bufnum = (a:0 && a:1 >= 0) ? a:1 : bufnr('%')
   return (  s:IsBufChannel(bufnum) || s:IsBufChat(bufnum)
-	\ || s:IsBufServer(bufnum) || s:IsBufList(bufnum))
+	\|| s:IsBufServer(bufnum) || s:IsBufList(bufnum))
 endfunction
 
 function! s:IsBufInfo(...)
@@ -902,13 +899,17 @@ function! s:IsBufChannelOther()
   return !s:IsBufChannelCurrent()
 endfunction
 
+function! s:IsServer(server)
+  return (a:server =~ '[.]')
+endfunction
+
 function! s:IsChannel(channel)
   return !match(a:channel, '[&#+!]')
 endfunction
 
-" Need to be more strict?
 function! s:IsNick(channel)
-  return (strlen(a:channel) && !s:IsChannel(a:channel))
+  " To explain: negate (a:channel contains invalid characters)
+  return !(a:channel =~? '[^-0-9\\\[\]^`a-z{}]')
 endfunction
 
 function! s:CanOpenChanServ()
@@ -1031,7 +1032,6 @@ function! s:OpenBuf_Server(...)
   if !(loaded && s:BufVisit(bufnum))
     let comd = singlewin ? (loaded ? 'buffer' : 'edit').'!' : 'botright split'
     call s:CanOpenChanServ()
-
     if loaded
       call s:OpenBuf(comd, (singlewin ? bufnum : '+'.bufnum.'buffer'))
     else
@@ -1060,11 +1060,7 @@ function! s:OpenBuf_List()
     endif
 
     if loaded
-      if s:singlewin
-	call s:OpenBuf(comd, bufnum)
-      else
-	call s:OpenBuf(comd, '+'.bufnum.'buffer')
-      endif
+      call s:OpenBuf(comd, (s:singlewin ? bufnum : '+'.bufnum.'buffer'))
     else
       let bufname = s:GenBufName_List()
       call s:OpenBuf(comd, bufname)
@@ -1080,13 +1076,8 @@ function! s:OpenBuf_Channel(channel)
   if !(loaded && s:BufVisit(bufnum))
     let comd = s:singlewin ? (loaded ? 'buffer' : 'edit') : 'botright split'
     call s:CanOpenChanServ()
-
     if loaded
-      if s:singlewin
-	call s:OpenBuf(comd, bufnum)
-      else
-	call s:OpenBuf(comd, '+'.bufnum.'buffer')
-      endif
+      call s:OpenBuf(comd, (s:singlewin ? bufnum : '+'.bufnum.'buffer'))
     else
       let bufname = s:GenBufName_Channel(a:channel)
       call s:OpenBuf(comd, bufname)
@@ -1106,13 +1097,8 @@ function! s:OpenBuf_Chat(nick, server)
   if !(loaded && s:BufVisit(bufnum))
     let comd = s:singlewin ? (loaded ? 'buffer' : 'edit') : 'botright split'
     call s:CanOpenChanServ()
-
     if loaded
-      if s:singlewin
-	call s:OpenBuf(comd, bufnum)
-      else
-	call s:OpenBuf(comd, '+'.bufnum.'buffer')
-      endif
+      call s:OpenBuf(comd, (s:singlewin ? bufnum : '+'.bufnum.'buffer'))
     else
       let bufname = s:GenBufName_Chat(a:nick, a:server)
       call s:OpenBuf(comd, bufname)
@@ -1196,7 +1182,19 @@ function! s:PostOpenBuf_Server()
   let abuf = expand('<abuf>') + 0
   let server = getbufvar(abuf, 'server')
   if strlen(server) && s:singlewin
-    call s:ResetChanServ('', server)
+    call s:ResetChanServ(abuf, '', server)
+  endif
+endfunction
+
+function! s:PostOpenBuf_List()
+  if s:autocmd_disable
+    return
+  endif
+
+  let abuf = expand('<abuf>') + 0
+  let server = getbufvar(abuf, 'server')
+  if strlen(server) && s:singlewin
+    call s:ResetChanServ(abuf, '', server)
   endif
 endfunction
 
@@ -1213,7 +1211,7 @@ function! s:PostOpenBuf_Channel()
       call s:BufVisit(abuf)
     endif
     if s:singlewin
-      call s:ResetChanServ(channel, server)
+      call s:ResetChanServ(abuf, channel, server)
     endif
   endif
 endfunction
@@ -1231,7 +1229,7 @@ function! s:PostOpenBuf_Chat()
       call s:BufVisit(abuf)
     endif
     if s:singlewin
-      call s:ResetChanServ(nick, server)
+      call s:ResetChanServ(abuf, nick, server)
     endif
   endif
 endfunction
@@ -1334,11 +1332,13 @@ endfunction
 
 function! s:DoSyntax_Info()
   syntax match VimIRCInfoHasNew "^\s*+.*$" contains=VimIRCInfoIndic,VimIRCInfoBufNum
+  syntax match VimIRCInfoActive "^\s*\*.*$" contains=VimIRCInfoIndic,VimIRCInfoBufNum
   syntax match VimIRCInfoDead "^\s*-.*$" contains=VimIRCInfoIndic,VimIRCInfoBufNum
-  syntax match VimIRCInfoIndic "^\s*[+-]" contained
+  syntax match VimIRCInfoIndic "^\s*[*+-]" contained
   syntax match VimIRCInfoBufNum "\[-\=\d\+\]"
 
   highlight link VimIRCInfoHasNew DiffChange
+  highlight link VimIRCInfoActive Identifier
   highlight link VimIRCInfoDead   Comment
   highlight link VimIRCInfoIndic  Ignore
   highlight link VimIRCInfoBufNum Comment
@@ -1396,63 +1396,84 @@ function! s:InitBuf_Info(bufname)
 endfunction
 
 function! s:InitBuf_Server(bufname, port)
+  let bufnum = bufnr('%')
+
   let b:server	= s:server
   let b:port	= a:port
   let b:umode	= ''
   let b:title	= '  '.s:nick.' @ '.s:server
+
   call setline(1, s:GetTime(1).' *: Connecting with '.s:server.'...')
   call s:DoSettings()
   call s:DoSyntax_Server()
-  call s:SetBufNum(a:bufname, bufnr('%'))
+
+  call s:SetBufNum(a:bufname, bufnum)
+  call s:SetCurChanServ(bufnum)
 endfunction
 
 function! s:InitBuf_List(bufname)
+  let bufnum = bufnr('%')
+
   let b:server	= s:server
   let b:title	= '  List of channels @ '.s:server
   let b:updated = 0
   let b:updating= 1
+
   call s:DoSettings()
+  call s:DoSyntax_List()
   setlocal nowrap
   " I take Mutt's key-bindings for sorting
   nnoremap <buffer> <silent> o	:call <SID>SortSelect()<CR>
   nnoremap <buffer> <silent> O	:call <SID>SortReverse()<CR>
   nnoremap <buffer> <silent> R	:call <SID>UpdateList()<CR>
-  call s:DoSyntax_List()
-  call s:SetBufNum(a:bufname, bufnr('%'))
+
+  call s:SetBufNum(a:bufname, bufnum)
+  call s:SetCurChanServ(bufnum)
 endfunction
 
 function! s:InitBuf_Channel(bufname, channel)
+  let bufnum = bufnr('%')
+
   let b:server	= s:server
   let b:channel = a:channel
   let b:cmode	= ''
   let b:topic	= ''
   let b:title	= '  '.a:channel.' @ '.s:server
+
   call setline(1, s:GetTime(1).' *: Now talking in '.a:channel)
   call s:DoSettings()
   call s:DoSyntax_Channel()
-  call s:SetBufNum(a:bufname, bufnr('%'))
+
+  call s:SetBufNum(a:bufname, bufnum)
+  call s:SetCurChanServ(bufnum)
 endfunction
 
 function! s:InitBuf_Chat(bufname, nick, server)
+  let bufnum = bufnr('%')
   " NOTE: a:server is the name of the IRC server, not the dcc peer's
   let b:server	= a:server
   let b:channel = a:nick
   let b:title	= '  Chatting with '.a:nick
+
   call setline(1, s:GetTime(1).' *: Now chatting with '.a:nick)
   call s:DoSettings()
   call s:DoSyntax_Chat()
-  call s:SetBufNum(a:bufname, bufnr('%'))
+
+  call s:SetBufNum(a:bufname, bufnum)
+  call s:SetCurChanServ(bufnum)
 endfunction
 
 function! s:InitBuf_Nicks(bufname, channel)
   let b:server	= s:server
   let b:channel = a:channel
   let b:title	= a:channel
+
   call s:DoSettings()
+  call s:DoSyntax_Nicks()
   setlocal nowrap
   nnoremap <buffer> <silent> <CR> :call <SID>SelectNickAction()<CR>
   vnoremap <buffer> <silent> <CR> :call <SID>SelectNickAction()<CR>
-  call s:DoSyntax_Nicks()
+
   call s:SetBufNum(a:bufname, bufnr('%'))
   if s:IsNick(a:channel)
     call s:FillBuf_Nicks(a:channel)
@@ -1464,6 +1485,7 @@ function! s:InitBuf_Command(bufname, channel)
   let b:channel = a:channel
   let b:title	= '  '.(s:IsNick(a:channel) ? 'Chatting with' : 'Posting to').
 		  \' '.(strlen(a:channel) ? a:channel.' @ ' : '').s:server
+
   call s:DoSettings()
   setlocal expandtab
   nnoremap <buffer> <silent> <CR> :call <SID>SendLines()<CR>
@@ -1477,6 +1499,7 @@ function! s:InitBuf_Command(bufname, channel)
   nunmap <buffer> O
   nunmap <buffer> p
   nunmap <buffer> P
+
   " TODO: Forbid gq stuffs (?)
   call s:SetBufNum(a:bufname, bufnr('%'))
 endfunction
@@ -1916,17 +1939,22 @@ function! s:SendLines() range
 
     let i = a:firstline
     while s:BufVisit(curbuf)
-      " Remember the context for a while in which the command/message was
-      " entered.
-      " NOTE: Current server/buffer may change each time after SendLine()
-      call s:SetCurServer(b:server, b:channel)
-      if i > a:lastline
-	call s:CloseBuf_Command(destbuf, (a:firstline == a:lastline))
-	break
-      endif
-      " Get the destination buffer
-      let destbuf = s:SendLine(s:ExpandAlias(s:StrTrim(getline(i))))
-      let i = i + 1
+      try
+	" Remember the context for a while in which the command/message was
+	" entered.
+	" NOTE: Current server/buffer may change each time after SendLine()
+	call s:SetCurServer(b:server, b:channel)
+	if i > a:lastline
+	  call s:CloseBuf_Command(destbuf, (a:firstline == a:lastline))
+	  break
+	endif
+	" Get the destination buffer
+	let destbuf = s:SendLine(s:ExpandAlias(s:StrTrim(getline(i))))
+      catch /^SYNTAX ERROR/
+	call s:PromptKey(v:exception, 'ErrorMsg')
+      finally
+	let i = i + 1
+      endtry
     endwhile
   catch
     if s:inside_loop
@@ -1952,12 +1980,13 @@ function! s:SendLine(line)
       let args = s:ExpandArgs(comd, s:StrMatch(a:line, rx, '\2'))
       if strlen(args)
 	" This provision is only for removing a leading colon which user
-	" unnecessarily appended to the MESSAGE and adding it back!  Silly and
+	" unnecessarily appended to the message and adding it back!  Silly and
 	" redundant
 	let rx = s:GetCmdRx(comd)
 	" NOTE: Matching with empty string always results in true (!!)
 	if strlen(rx) && args =~ rx
-	  let args = s:StrMatch(args, rx, '\1').s:StrMatch(args, rx, ':\2')
+	  let args = s:StrTrim(s:StrMatch(args, rx, '\1').
+			      \s:StrMatch(args, rx, ' :\2'))
 	endif
       endif
     endif
@@ -2139,8 +2168,8 @@ function! s:Cmd_SET(optval, ...)
   let val = s:StrMatch(a:optval, rx, '\2')
 
   if strlen(opt)
-	\ && (	 opt =~# '^\%('.substitute(numopt, ' ', '\\|', 'g').'\)$'
-	\     || opt =~# '^\%('.substitute(stropt, ' ', '\\|', 'g').'\)$')
+	\ && (	opt =~# '^\%('.substitute(numopt, ' ', '\\|', 'g').'\)$'
+	\    || opt =~# '^\%('.substitute(stropt, ' ', '\\|', 'g').'\)$')
     if strlen(val) || unset
       let s:{opt} = val
       call s:OptValidate(opt)
@@ -2257,50 +2286,84 @@ function! s:ExpandCmd(comd)
 endfunction
 
 " Expand '%' to the current channel, etc.
+" TODO: How should we behave to syntax errors?
 function! s:ExpandArgs(comd, args)
+  "let errmsg = 'SYNTAX ERROR '
   let args = a:args
 
-  if a:comd =~# '^\%(NAMES\|WHO\%(I\|WA\)S\)$'
+  if a:comd =~# '^\%(NAMES\)$'
     " Syntax: CHANNEL [<comma> CHANNEL]*
-    let args = s:StrSquash(substitute(a:args, '%', s:channel, ''))
+    " User might delimit targets with spaces, which is wrong
+    let args = s:ExpandChannel(substitute(a:args, '\s\+', ',', 'g'))
+  elseif a:comd =~# '^WHOIS$'
+    " Syntax: [SERVER] USER [<comma> USER]*
+    let server= s:ExpandChannel(s:StrDivide(a:args, 1))
+    let nicks = s:ExpandChannel(substitute(s:StrDivide(a:args, 0),
+	  \						    '\s\+', ',', 'g'))
+
+    let args = server
+    if strlen(nicks)
+      if s:IsNick(server)
+	let args = server.','.nicks
+      else
+	let args = server.(strlen(server) ? ' ': '').nicks
+      endif
+    endif
+  elseif a:comd =~# '^WHOWAS$'
+    " Syntax: USER [COUNT [SERVER]]
+    " NOTE: Some servers accept multiple users, delimited with commas, whereas
+    " RFC1459 specifies only one user.  I adopt the latter.
+    let args = s:ExpandChannel(a:args, ' ')
   elseif a:comd =~# '^\%(ISON\|USERHOST\)$'
     " Syntax: USER [<space> USER]*
     " User might delimit targets with commas, which is wrong
-    let args = s:StrCompress(substitute(a:args, ',', ' ', 'g'))
+    let args = s:ExpandChannel(substitute(a:args, ',', ' ', 'g'), ' ')
   elseif a:comd =~# '^\%(INVITE\)$'
     " Syntax: USER CHANNEL
-    let rx = '^\(\S\+\)\%(\s\+\(\S\+\)\)\=$'
-    let nick	= s:StrMatch(a:args, rx, '\1')
-    let channel = s:StrMatch(a:args, rx, '\2')
-    if !s:IsChannel(channel)
-      let args = nick.' '.s:channel
+    let rx = '^\(\S\+\)\%(\s\+\(\S\+\)\)'.(s:IsChannel(s:channel)
+	  \						      ? '\=' : '').'$'
+    if a:args =~ rx
+      let nick	  = s:StrMatch(a:args, rx, '\1')
+      let channel = s:StrMatch(a:args, rx, '\2')
+      let args = nick.' '.{s:IsChannel(channel) ? 'l' : 's'}:channel
     endif
   elseif !s:IsCmdUnary(a:comd)
     if a:comd =~# '^\%(ACTION\)$'
-      " NOTE: "/ME" command MUST come with no targets specified
-      let args = s:channel.' '.a:args
-    elseif a:comd =~# '^\%(DESCRIBE\|NOTICE\|PART\|PRIVMSG\|TOPIC\)$'
-	  \ || a:comd =~# '^\%(KICK\)$'
+      " NOTE: "/ME" command MUST come with NO targets specified
+      if strlen(s:channel)
+	let args = s:channel.' '.a:args
+      endif
+    elseif (  a:comd =~# '^\%(DESCRIBE\|NOTICE\|PART\|PRIVMSG\|TOPIC\)$'
+	  \|| a:comd =~# '^\%(KICK\)$')
       " Syntax: TARGET [MESSAGE]
       "		CHANNEL USER [MESSAGE]
       " Divide arguments into two parts, to see if the former is righteously
       " a channel or not
-      let rx = '^\(\S\+\)\s*\(.*\)$'
-      let channel = s:StrMatch(a:args, rx, '\1')
-      let args    = s:StrMatch(a:args, rx, '\2')
+      let rx = '^\(\S\+\)\%(\s\+\(.\+\)\)\=$'
+      let channel = s:ExpandChannel(s:StrMatch(a:args, rx, '\1'))
+      let message = s:StrMatch(a:args, rx, '\2')
 
-      let channel = substitute(channel, '%', s:channel, '')
       if !s:IsChannel(channel) && (a:comd =~# '^\%(KICK\|PART\|TOPIC\)$')
 	" If user ommitted channel(s), supply the current one
-	let args = s:channel.(strlen(a:args) ? ' '.a:args : '')
-      else
-	" Just restore it, potentially squeezing the spaces in-between
-	let args = channel.' '.args
+	let channel = s:channel
+	let message = a:args
+      endif
+      " Restore it, potentially squeezing the spaces in-between
+      if strlen(channel)
+	let args = channel.(strlen(message) ? ' '.message : '')
       endif
     endif
   endif
 
   return args
+endfunction
+
+function! s:ExpandChannel(channel, ...)
+  let delimit = (a:0 && strlen(a:1)) ? a:1 : ','
+  let channel = substitute(a:channel, '%', s:channel, '')
+  let channel = substitute(channel, '%', '', 'g')
+  let channel = s:StrCompress(channel, delimit)
+  return channel
 endfunction
 
 " Syntax: COMMAND [MESSAGE]
@@ -2324,9 +2387,9 @@ function! s:GetCmdRx(comd)
   if s:IsCmdUnary(a:comd)
     let rx = '^\(\):\=\(.\+\)$'
   elseif s:IsCmdBinary(a:comd)
-    let rx = '^\(\S\+\s\)\s*:\=\(.\+\)$'
+    let rx = '^\(\S\+\)\s\+:\=\(.\+\)$'
   elseif s:IsCmdTernary(a:comd)
-    let rx = '^\(\S\+\s\+\S\+\s\)\s*:\=\(.\+\)$'
+    let rx = '^\(\S\+\s\+\S\+\)\s\+:\=\(.\+\)$'
   endif
   return rx
 endfunction
@@ -2639,10 +2702,9 @@ function! s:LoadList()
   if !loaded
     let list = s:logdir.'/'.s:GenFName_List()
     let loaded = (filereadable(list)
-	  \	  && (localtime() - getftime(list)) < s:listexpire)
+	  \		    && (localtime() - getftime(list)) < s:listexpire)
     if loaded
       call s:Read(list)
-      call s:PostLoadList(0)
     endif
   endif
   return loaded
@@ -2901,18 +2963,29 @@ function! s:StrQuote(str)
 endfunction
 
 " Remove unnecessary spaces in a string
-function! s:StrTrim(str)
-  return substitute(a:str, '\%(^\s\+\|\s\+$\)', '', 'g')
+function! s:StrTrim(str, ...)
+  let space = (!a:0 || a:1 =~ '^ \=$')
+  let patrn = space ? '\s' : '\%(\V'.a:1.'\m\)'
+
+  return substitute(a:str, '\%(^'.patrn.'\+\|'.patrn.'\+$\)', '', 'g')
 endfunction
 
 " Ditto
-function! s:StrCompress(str)
-  return substitute(s:StrTrim(a:str), '\s\{2,\}', ' ', 'g')
+function! s:StrCompress(str, ...)
+  let space = (!a:0 || a:1 =~ '^ \=$')
+  let patrn = space ? '\s' : '\%(\V'.a:1.'\m\)'
+  let subst = space ? ' ' : a:1
+
+  let str = s:StrTrim(a:str, subst)
+  return substitute(str, patrn.'\{2,\}', subst, 'g')
 endfunction
 
 " Severer version of the above
-function! s:StrSquash(str)
-  return substitute(a:str, '\s\+', '', 'g')
+function! s:StrSquash(str, ...)
+  let space = (!a:0 || a:1 =~ '^ \=$')
+  let patrn = space ? '\s' : '\%(\V'.a:1.'\m\)'
+
+  return substitute(a:str, patrn.'\+', '', 'g')
 endfunction
 
 function! s:StrMultiply(str, times)
@@ -2923,6 +2996,13 @@ function! s:StrMultiply(str, times)
     let i = i + 1
   endwhile
   return str
+endfunction
+
+" Divide string at space or comma
+function! s:StrDivide(str, former)
+  return s:StrMatch(a:str,
+	\	    '^\([^[:space:],]\+\)\%([[:space:],]\+\(.*\)\)\=$',
+	\	    '\'.(1 + (a:former ? 0 : 1)))
 endfunction
 
 function! s:EscapeFName(str)
@@ -3237,6 +3317,7 @@ function! s:PostLoadList(updated)
   if ($Current_Server->{'list'} < 0)
     {
       $Current_Server->{'list'} = VIM::Eval('l:bufnum');
+      #$Current_ChanServ = $Current_Server->{'list'};
       set_info($Current_Server, $INFO_UPDATE);
     }
 }
@@ -3316,7 +3397,7 @@ EOP
   call s:DelBufNum(abuf)
 endfunction
 
-function! s:ResetChanServ(channel, server)
+function! s:ResetChanServ(abuf, channel, server)
   perl <<EOP
 {
   my $chan = VIM::Eval('a:channel');
@@ -3326,17 +3407,19 @@ function! s:ResetChanServ(channel, server)
     {
       if ($cref->{'info'} & $INFO_HASNEW)
 	{
-	  unset_info($cref, $INFO_HASNEW);
 	  set_info($sref, $INFO_UPDATE);
+	  unset_info($cref, $INFO_HASNEW);
 	}
+
       if (is_chan($chan) && ($cref->{'info'} & $INFO_UPDATE))
 	{
 	  draw_nickwin($chan);
-	  $cref->{'info'} &= ~$INFO_UPDATE;
+	  unset_info($cref, $INFO_UPDATE);
 	}
     }
 }
 EOP
+  call s:SetCurChanServ(a:abuf)
 endfunction
 
 function! s:WalkThruChanServ(forward)
@@ -3445,6 +3528,22 @@ function! s:SetCurChannel(channel)
   if !(exists('s:channel') && s:channel ==# a:channel)
     let s:channel = a:channel
   endif
+endfunction
+
+function! s:SetCurChanServ(...)
+  let bufnum = a:0 ? a:1 : bufnr('%')
+
+  perl <<EOP
+{
+  my $bufnum = VIM::Eval('l:bufnum');
+
+  if ($Current_ChanServ != $bufnum)
+    {
+      $Current_ChanServ = $bufnum;
+      set_info($Current_Server, $INFO_UPDATE);
+    }
+}
+EOP
 endfunction
 
 function! s:GetCurNick()
@@ -3576,6 +3675,7 @@ function! s:ResetPerlVars()
   undef @Servers;
   undef %Clients;
   undef $Current_Server;
+  undef $Current_ChanServ;
   undef $RS;
   undef $WS;
 }
@@ -3752,7 +3852,9 @@ endfunction
 function! s:Send_LIST(comd, args)
   " MEMO: Some servers don't send "321 RPL_LISTSTART", so open a list buffer
   " before we send the command
-  if !s:LoadList()
+  if s:LoadList()
+    call s:PostLoadList(0)
+  else
     call s:DoSend(a:comd, a:args)
   endif
 endfunction
@@ -4024,6 +4126,8 @@ use Fcntl qw(O_RDONLY O_WRONLY O_CREAT O_EXCL O_APPEND O_TRUNC);
 
 our @Servers;		# IRC servers
 our $Current_Server;	# reference referring an element of @Servers
+our $Current_ChanServ;	# buffer number of the active channel/server
+
 our %Clients;		# clients connected over dcc protocol
 our ($RS, $WS);		# IO::Select objects
 
@@ -4494,6 +4598,7 @@ sub irc_send
 our $INFO_UPDATE = 0x01;
 our $INFO_HASNEW = 0x02;
 
+
 sub update_info
 {
   my $orgbuf = vim_bufnr();
@@ -4513,8 +4618,10 @@ sub update_info
 			  sprintf("%s[%d]%s",
 				  $dead
 				  ? '-'
-				  : $sref->{'info'} & $INFO_HASNEW
-				    ? '+' : ' ',
+				  : ($sref->{'info'} & $INFO_HASNEW)
+				    ? '+'
+				    : !($sref->{'bufnum'} - $Current_ChanServ)
+				      ? '*' : ' ',
 				  $sref->{'bufnum'},
 				  $sref->{'server'}));
 
@@ -4522,7 +4629,10 @@ sub update_info
 	    {
 	      $curbuf->Append($curbuf->Count(),
 			      sprintf(" %s[%d]list@%s",
-				      $dead ? '-' : ' ',
+				      $dead
+				      ? '-'
+				      : !($sref->{'list'} - $Current_ChanServ)
+					? '*' : ' ',
 				      $sref->{'list'},
 				      $sref->{'server'}));
 	    }
@@ -4533,8 +4643,11 @@ sub update_info
 			      sprintf(" %s[%d]%s\t\t\t%s",
 				      $dead
 				      ? '-'
-				      : $cref->{'info'} & $INFO_HASNEW
-					? '+' : ' ',
+				      : ($cref->{'info'} & $INFO_HASNEW)
+					? '+'
+					: !($cref->{'bufnum'}
+							  - $Current_ChanServ)
+					  ? '*' : ' ',
 				      $cref->{'bufnum'},
 				      $cref->{'name'},
 				      $sref->{'server'}));
@@ -4546,8 +4659,11 @@ sub update_info
 			      sprintf(" %s[%d]%s\t\t\t%s",
 				      $dead && index($chat->{'nick'}, '=')
 				      ? '-'
-				      : $chat->{'info'} & $INFO_HASNEW
-					? '+' : ' ',
+				      : ($chat->{'info'} & $INFO_HASNEW)
+					? '+'
+					: !($chat->{'bufnum'}
+							  - $Current_ChanServ)
+					  ? '*' : ' ',
 				      $chat->{'bufnum'},
 				      $chat->{'nick'},
 				      $sref->{'server'}));
@@ -6310,6 +6426,7 @@ sub draw_nickwin
     }
   else
     {
+      # Redraw later
       if (my $cref = find_chan($chan))
 	{
 	  set_info($cref, $INFO_UPDATE);
@@ -6429,7 +6546,7 @@ sub find_chanserv
   if ($sref = find_server($serv))
     {
       $cref = $chan ? &{'find_cha'.(is_chan($chan)
-				    ? 'nnel' : 't')}($chan, $sref)
+				    ? 'n' : 't')}($chan, $sref)
 		    : $sref;
     }
 
