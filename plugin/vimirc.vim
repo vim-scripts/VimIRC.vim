@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 February 2004
-" Last Change: Mon, 08 Mar 2004 16:51:53 +0900 (JST)
+" Last Change: Tue, 09 Mar 2004 21:37:02 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -11,8 +11,8 @@
 "   Ilya Sher		an idea for mini-buffers for cmdline editing
 "
 " Features:
-"   * real-time message receiving with some user interaction (cursor movement
-"     etc.)
+"   * real-time message receiving with user interaction (many of the normal
+"     mode commands available)
 "   * multiple servers/channels connectivity
 "
 "   A Drawback:
@@ -24,7 +24,7 @@
 "
 " Requirements:
 "   * Vim 6.2 or later with perl interface enabled
-"   * Perl (preferably 5.8 or later, if you want multibyte feature, which is
+"   * Perl (preferably 5.8 or later if you want multibyte feature, which is
 "     not implemented yet)
 "
 " Options:
@@ -124,7 +124,7 @@ endif
 let s:save_cpoptions = &cpoptions
 set cpoptions&
 
-let s:version = '0.5'
+let s:version = '0.5.1'
 let s:client = 'VimIRC '.s:version
 " Set this to zero when releasing, which I'll occasionally forget, for sure
 let s:debug = 0
@@ -132,84 +132,6 @@ let s:debug = 0
 if !s:debug
   let g:loaded_vimirc = 1
 endif
-
-function! s:OpenChannel()
-  let chan = matchstr(getline('.'), '^[&#+!]\S\+')
-  if strlen(chan) && s:GetConf_YN("Join the channel ".chan."?")
-    call s:Send_JOIN('JOIN', chan)  " first parameter can be any string i think
-  endif
-endfunction
-
-function! s:SortSelect()
-  if !s:IsBufList()
-    return
-  endif
-
-  let choice= confirm("Sort by what?", "&channel\n&member\n&topic")
-  if !choice
-    return
-  endif
-
-  if choice == 1
-    let cmp = 'channel'
-  elseif choice == 2
-    let cmp = 'member'
-  elseif choice == 3
-    let cmp = 'topic'
-  endif
-
-  let oldline = getline('.')
-  call s:PreBufModify()
-  call s:SortList(cmp, (s:GetVimVar('b:sortdir') + 0))
-  call s:PostBufModify()
-  call search('^\V'.oldline.'\$', 'w')
-endfunction
-
-function! s:SortReverse()
-  if !s:IsBufList()
-    return
-  endif
-
-  let lnum = line('.')
-  call s:PreBufModify()
-  perl $curbuf->Set(1, reverse($curbuf->Get(1 .. $curbuf->Count())))
-  call s:PostBufModify()
-  let b:sortdir = !(s:GetVimVar('b:sortdir'))
-  execute (line('$') - lnum + 1)
-endfunction
-
-function! s:SortList(cmp, dir)
-  perl <<EOP
-{
-  my $cmp = VIM::Eval('a:cmp');
-  my $dir = VIM::Eval('a:dir');
-  my @lns = $curbuf->Get(1 .. $curbuf->Count());
-
-  if ($cmp eq 'channel')
-    {
-      @lns = map { $_->[0] }
-	      sort {  if ($dir) { lc($b->[1]) cmp lc($a->[1]) }
-		      else	{ lc($a->[1]) cmp lc($b->[1]) } }
-		map { [ $_, /^(\S+).*$/ ] } @lns;
-    }
-  elsif ($cmp eq 'member')
-    {
-      @lns = map { $_->[0] }
-	      sort {  if ($dir) { $b->[1] <=> $a->[1] }
-		      else	{ $a->[1] <=> $b->[1] } }
-		map { [ $_, /^\S+\s+(\d+).*$/ ] } @lns;
-    }
-  else
-    {
-      @lns = map { $_->[0] }
-	      sort {  if ($dir) { $b->[1] cmp $a->[1] }
-		      else	{ $a->[1] cmp $b->[1] } }
-		map { [ $_, /^\S+\s+\d+\s*:(.*)$/ ] } @lns;
-    }
-  $curbuf->Set(1, @lns);
-}
-EOP
-endfunction
 
 "
 " Start/Exit
@@ -313,10 +235,6 @@ function! s:InitVars()
   " Prepend a leading colon
   let s:partmsg = substitute(s:partmsg, '^[^:]', ':&', '')
 
-  if 0
-    " Preferred language.
-    let s:preflang = s:GetVimVar('g:plugin_vimirc_preflang')
-  endif
 endfunction
 
 function! s:SetGlobVars()
@@ -366,6 +284,8 @@ function! s:StartVimIRC(...)
   call s:SetGlobVars()
   call s:DoCommands()
   call s:DoAutocmds()
+
+  call s:SetEncoding()
   call s:PerlIRC()
 
   call s:Server(s:server)
@@ -396,8 +316,8 @@ endfunction
 function! s:DoAutocmds()
   augroup VimIRC
     autocmd!
-    " TODO: Cannot use CursorHold to auto re-enter the loop: getchar() won't
-    "	    get a char since key input will not be waited after that event.
+    " NOTE: Cannot use CursorHold to auto re-enter the loop: getchar() won't
+    "	    get a char since key inputs will never be waited after that event.
     execute 'autocmd CursorHold' s:bufname_prefix.'* call s:OfflineMsg()'
   augroup END
 endfunction
@@ -440,152 +360,6 @@ function! s:MainLoop()
       break
     endtry
   endwhile
-endfunction
-
-"
-" Misc. utility functions
-"
-
-function! s:Beep(times)
-  if !a:times
-    return
-  endif
-
-  try
-    let save_errorbells = &errorbells
-    set errorbells
-    let save_visualbell = &visualbell
-    set novisualbell
-    let save_line = line('.')
-    let save_col = col('.')
-
-    let i = 0
-    normal! 0
-    while i < a:times
-      normal! h
-      let i = i + 1
-      if (a:times - i)  " do not sleep for the last time
-	sleep 250 m
-      endif
-    endwhile
-  finally
-    let &errorbells = save_errorbells
-    let &visualbell = save_visualbell
-    call cursor(save_line, save_col)
-  endtry
-endfunction
-
-function! s:BufClear()
-  silent %delete _
-endfunction
-
-function! s:ExecuteSafe(prefix, comd)
-  execute (exists(':'.a:prefix) == 2 ? a:prefix : '') a:comd
-endfunction
-
-function! s:HiliteColumn(bogus, ...)
-  execute 'match' (a:0 ? a:1 : 'Cursor') '/\%#\k*/'
-endfunction
-
-function! s:HiliteLine(lnum, ...)
-  execute 'match' (a:0 ? a:1 : 'Cursor') '/^.*\%'.(a:lnum
-	\					    ? a:lnum
-	\					    : line(a:lnum)).'l.*$/'
-endfunction
-
-function! s:GetTime(short, ...)
-  return strftime((a:short ? '%H:%M' : '%Y/%m/%d %H:%M:%S'), (a:0 && a:1 ? a:1 : localtime()))
-endfunction
-
-function! s:RedrawStatus(...)
-  if exists(':redrawstatus')
-    execute 'redrawstatus'.(a:0 && a:1 ? '!' : '')
-  endif
-endfunction
-
-function! s:PreBufModify()
-  let s:save_undolevels = &undolevels
-  set undolevels=-1
-  setlocal modifiable
-endfunction
-
-function! s:PostBufModify()
-  if exists('s:save_undolevels')
-    let &undolevels = s:save_undolevels
-    unlet s:save_undolevels
-  endif
-  "setlocal nomodifiable
-endfunction
-
-function! s:Input(msg, ...)
-  return s:StrCompress(input(a:msg.': ', (a:0 ? a:1 : '')))
-endfunction
-
-function! s:IsBufEmpty()
-  return !(line('$') > 1 || strlen(getline(1)))
-endfunction
-
-function! s:IsBufIRC(...)
-  return !match(bufname((a:0 && a:1 ? a:1 : '%')), s:bufname_prefix)
-endfunction
-
-function! s:IsBufServer(...)
-  return !match(bufname(a:0 && a:1 ? a:1 : '%'), s:bufname_server)
-endfunction
-
-function! s:IsBufList(...)
-  return !match(bufname(a:0 && a:1 ? a:1 : '%'), s:bufname_list)
-endfunction
-
-function! s:IsBufChannel(...)
-  return !match(bufname(a:0 && a:1 ? a:1 : '%'), s:bufname_channel)
-endfunction
-
-function! s:IsBufCommand(...)
-  return !match(bufname(a:0 && a:1 ? a:1 : '%'), s:bufname_command)
-endfunction
-
-function! s:GetVimVar(varname)
-  return exists('{a:varname}') ? {a:varname} : ''
-endfunction
-
-function! s:GetConf_YN(msg)
-  echo a:msg.' (y/n): '
-  return (nr2char(getchar()) ==? 'y')
-endfunction
-
-function! s:StrMatched(str, pat, sub)
-  " A wrapper function to substitute().  First extract an interesting part
-  " upon which we perform matching, so that only necessary string (sub) will
-  " be obtained.  An empty string will be returned on failure.
-  " I took this clever trick from Chalice.
-  return substitute(matchstr(a:str, a:pat), a:pat, a:sub, '')
-endfunction
-
-" Remove unnecessary spaces in a string
-function! s:StrTrim(str)
-  return substitute(a:str, '\%(^\s\+\|\s\+$\)', '', 'g')
-endfunction
-
-function! s:StrCompress(str)
-  return substitute(s:StrTrim(a:str), '\s\{2,\}', ' ', 'g')
-endfunction
-
-function! s:BufTrim()
-  while search('^\s*$', 'w') && line('$') > 1
-    delete _
-  endwhile
-endfunction
-
-function! s:SelectWindow(bufnum)
-  let winnum = -1
-  if a:bufnum
-    let winnum = bufwinnr(a:bufnum)
-    if winnum >= 0 && winnum != winnr()
-      execute winnum.'wincmd w'
-    endif
-  endif
-  return winnum
 endfunction
 
 "
@@ -662,6 +436,26 @@ function! s:GetChannelSafe(channel)
   return escape(tolower(a:channel), '#')
 endfunction
 
+function! s:IsBufIRC(...)
+  return !match(bufname(a:0 && a:1 ? a:1 : '%'), s:bufname_prefix)
+endfunction
+
+function! s:IsBufServer(...)
+  return !match(bufname(a:0 && a:1 ? a:1 : '%'), s:bufname_server)
+endfunction
+
+function! s:IsBufList(...)
+  return !match(bufname(a:0 && a:1 ? a:1 : '%'), s:bufname_list)
+endfunction
+
+function! s:IsBufChannel(...)
+  return !match(bufname(a:0 && a:1 ? a:1 : '%'), s:bufname_channel)
+endfunction
+
+function! s:IsBufCommand(...)
+  return !match(bufname(a:0 && a:1 ? a:1 : '%'), s:bufname_command)
+endfunction
+
 "
 " Opening buffers
 "
@@ -669,8 +463,8 @@ endfunction
 function! s:OpenBuf(comd, buffer)
   " Avoid "not enough room" error
   let winminheight  = &winminheight
-  set winminheight=0
   let winminwidth   = &winminwidth
+  set winminheight=0
   set winminwidth=0
   silent execute a:comd a:buffer
   let &winminheight = winminheight
@@ -695,6 +489,7 @@ endfunction
 
 function! s:OpenBuf_List()
   let bufnum = s:GetBufNum_List()
+  " Open it next to the server window
   call s:SelectWindow(s:GetBufNum_Server())
   if bufnum >= 0
     if s:SelectWindow(bufnum) < 0
@@ -727,7 +522,7 @@ endfunction
 
 function! s:OpenBuf_Names(channel)
   let bufnum  = s:GetBufNum_Names(a:channel)
-  let command = 'vertical belowright 10split'
+  let command = 'vertical belowright 11split'
   call s:SelectWindow(s:GetBufNum_Channel(a:channel))
   if bufnum >= 0
     if s:SelectWindow(bufnum) < 0
@@ -744,6 +539,10 @@ function! s:OpenBuf_Command()
   if !(exists('s:opened') && s:opened && s:IsBufIRC())
     return
   endif
+
+  " Set the current server appropriately, so the command/message will be sent
+  " to the one user intended
+  call s:SetCurrentServer(b:server)
 
   let channel = s:GetVimVar('b:channel')
   let bufnum  = s:GetBufNum_Command(channel)
@@ -783,15 +582,13 @@ function! s:DoHilite()
   " NOTE: Do not overdo.  It'll slow things down
   syntax match VimIRCUserHead display "^\S\+\%( \S\+:\)\=" contains=@VimIRCUserName
   syntax match VimIRCTime display "^\d\d:\d\d" containedin=VimIRCUserHead contained
-  syntax match VimIRCBullet display "\*" containedin=VimIRCUserHead contained
+  syntax match VimIRCBullet display "[*!]" containedin=VimIRCUserHead contained
   " User names
   syntax cluster VimIRCUserName contains=VimIRCUserMessage,VimIRCUserNotice,VimIRCUserAction,VimIRCUserQuery
   syntax match VimIRCUserMessage  display "<\S\+>" contained
   syntax match VimIRCUserNotice	  display "\[\S\+\]" contained
   syntax match VimIRCUserAction	  display "\*\S\+\*" contained
   syntax match VimIRCUserQuery	  display "?\S\+?" containedin=VimIRCUserHead contained
-  " Other stuff
-  syntax region VimIRCUnderline matchgroup=VimIRCIgnore start="" end=""
 
   highlight link VimIRCTime	    String
   highlight link VimIRCUserHead	    PreProc
@@ -800,13 +597,14 @@ function! s:DoHilite()
   highlight link VimIRCUserNotice   Statement
   highlight link VimIRCUserAction   WarningMsg
   highlight link VimIRCUserQuery    Question
-  highlight link VimIRCUnderline    Underlined
-  highlight link VimIRCIgnore	    Ignore
 endfunction
 
 function! s:DoHilite_Server()
   call s:DoHilite()
-  " No server-specific things?
+  syntax region VimIRCUnderline matchgroup=VimIRCIgnore start="" end=""
+
+  highlight link VimIRCUnderline    Underlined
+  highlight link VimIRCIgnore	    Ignore
 endfunction
 
 function! s:DoHilite_List()
@@ -851,7 +649,7 @@ function! s:InitBuf_List(bufname)
   let b:title	= '  List of channels @ '.s:server
   call s:DoSettings()
   setlocal nowrap
-  nnoremap <buffer> <silent> <CR> :call <SID>OpenChannel()<CR>
+  nnoremap <buffer> <silent> <CR> :call <SID>JoinChannel()<CR>
   " I take Mutt's keys
   nnoremap <buffer> <silent> o	  :call <SID>SortSelect()<CR>
   nnoremap <buffer> <silent> O	  :call <SID>SortReverse()<CR>
@@ -1021,7 +819,7 @@ function! s:HandleKey(key)
     if s:IsBufCommand()
       call s:SendingCommand()
     elseif s:IsBufList()
-      call s:OpenChannel()
+      call s:JoinChannel()
       echo ""
     else
       execute 'normal!' char
@@ -1041,7 +839,7 @@ function! s:HandleKey(key)
 	\ || char =~# '[$+-0GHLMNjkn^]'
     " One char commands
     silent! execute 'normal!' char
-  elseif char =~# '[gz]'
+  elseif char =~# '[`gmz]'
     " Commands which take a second char
     execute 'normal!' char.nr2char(getchar())
   elseif (char + 0) || char == "\<C-W>"
@@ -1072,13 +870,12 @@ function! s:SendingCommand()
   if !s:IsBufCommand()
     return
   endif
-  " Set the current server appropriately, so the command/message will be sent
-  " to the one user intended
+
   call s:SetCurrentServer(b:server)
   " The variable used for closing the command-line window.  Ugly, isn't it?
   let s:channel = b:channel
 
-  let line  = s:StrTrim(getline('.'))
+  let line = s:StrTrim(getline('.'))
   let comd = ''
   let args = ''
 
@@ -1175,6 +972,14 @@ function! s:SendingCommand()
   endif
   redraw
   call s:MainLoop()
+endfunction
+
+function! s:JoinChannel()
+  let chan = matchstr(getline('.'), '^[&#+!]\S\+')
+  if strlen(chan) && s:GetConf_YN("Join the channel ".chan."?")
+    call s:SetCurrentServer(b:server)
+    call s:Send_JOIN('JOIN', chan)  " first parameter can be any string i think
+  endif
 endfunction
 
 function! s:SearchWord(comd)
@@ -1306,10 +1111,242 @@ function! s:SetCommandMode(channel)
 endfunction
 
 "
+" Misc. utility functions
+"
+
+function! s:SelectWindow(bufnum)
+  let winnum = -1
+  if a:bufnum
+    let winnum = bufwinnr(a:bufnum)
+    if winnum >= 0 && winnum != winnr()
+      execute winnum.'wincmd w'
+    endif
+  endif
+  return winnum
+endfunction
+
+function! s:Beep(times)
+  if !a:times
+    return
+  endif
+
+  try
+    let line = line('.')
+    let col  = col('.')
+    let errorbells = &errorbells
+    let visualbell = &visualbell
+    set errorbells
+    set novisualbell
+
+    let i = 0
+    normal! 0
+    while i < a:times
+      normal! h
+      let i = i + 1
+      if (a:times - i)  " do not sleep for the last time
+	sleep 250 m
+      endif
+    endwhile
+  finally
+    let &errorbells = errorbells
+    let &visualbell = visualbell
+    call cursor(line, col)
+  endtry
+endfunction
+
+function! s:ExecuteSafe(prefix, comd)
+  execute (exists(':'.a:prefix) == 2 ? a:prefix : '') a:comd
+endfunction
+
+function! s:HiliteColumn(bogus, ...)
+  execute 'match' (a:0 ? a:1 : 'Cursor') '/\%#\k*/'
+endfunction
+
+function! s:HiliteLine(lnum, ...)
+  execute 'match' (a:0 ? a:1 : 'Cursor') '/^.*\%'.(a:lnum
+	\					    ? a:lnum
+	\					    : line(a:lnum)).'l.*$/'
+endfunction
+
+function! s:GetTime(short, ...)
+  return strftime((a:short ? '%H:%M' : '%Y/%m/%d %H:%M:%S'), (a:0 && a:1 ? a:1 : localtime()))
+endfunction
+
+function! s:RedrawStatus(...)
+  if exists(':redrawstatus')
+    execute 'redrawstatus'.(a:0 && a:1 ? '!' : '')
+  endif
+endfunction
+
+function! s:PreBufModify()
+  let s:save_undolevels = &undolevels
+  set undolevels=-1
+  setlocal modifiable
+endfunction
+
+function! s:PostBufModify()
+  if exists('s:save_undolevels')
+    let &undolevels = s:save_undolevels
+    unlet s:save_undolevels
+  endif
+  "setlocal nomodifiable
+endfunction
+
+function! s:Input(msg, ...)
+  return s:StrCompress(input(a:msg.': ', (a:0 ? a:1 : '')))
+endfunction
+
+function! s:IsBufEmpty()
+  return !(line('$') > 1 || strlen(getline(1)))
+endfunction
+
+function! s:GetVimVar(varname)
+  return exists('{a:varname}') ? {a:varname} : ''
+endfunction
+
+function! s:GetConf_YN(msg)
+  echo a:msg.' (y/n): '
+  return (nr2char(getchar()) ==? 'y')
+endfunction
+
+function! s:StrMatched(str, pat, sub)
+  " A wrapper function to substitute().  First extract an interesting part
+  " upon which we perform matching, so that only necessary string (sub) will
+  " be obtained.  An empty string will be returned on failure.
+  " I took this clever trick from Chalice.
+  return substitute(matchstr(a:str, a:pat), a:pat, a:sub, '')
+endfunction
+
+" Remove unnecessary spaces in a string
+function! s:StrTrim(str)
+  return substitute(a:str, '\%(^\s\+\|\s\+$\)', '', 'g')
+endfunction
+
+function! s:StrCompress(str)
+  return substitute(s:StrTrim(a:str), '\s\{2,\}', ' ', 'g')
+endfunction
+
+function! s:BufClear()
+  silent %delete _
+endfunction
+
+function! s:BufTrim()
+  while search('^\s*$', 'w') && line('$') > 1
+    delete _
+  endwhile
+endfunction
+
+"
 " And the Perl part
 "
 
 if has('perl')
+function! s:SetEncoding()
+  let encs = ''
+  if &encoding ==# 'cp932'
+    let encs = '7bit-jis'
+  endif
+  if !strlen(encs)
+    return
+  endif
+
+  perl <<EOP
+{
+  use Encode;
+  use Encode::Guess;
+
+  $Encoding = VIM::Eval('&encoding');
+  Encode::Guess->set_suspects(split(/,/, scalar(VIM::Eval('l:encs'))));
+}
+EOP
+endfunction
+
+function! s:SortSelect()
+  if !s:IsBufList()
+    return
+  endif
+
+  let choice= confirm("Sort by what?", "&channel\n&member\n&topic")
+  if !choice
+    return
+  endif
+
+  if choice == 1
+    let cmp = 'channel'
+  elseif choice == 2
+    let cmp = 'member'
+  elseif choice == 3
+    let cmp = 'topic'
+  endif
+
+  let oldline = getline('.')
+  call s:PreBufModify()
+  call s:SortList(cmp, (s:GetVimVar('b:sortdir') + 0))
+  call s:PostBufModify()
+  call search('^\V'.oldline.'\$', 'w')
+endfunction
+
+function! s:SortReverse()
+  if !s:IsBufList()
+    return
+  endif
+
+  let lnum = line('.')
+  call s:PreBufModify()
+  perl $curbuf->Set(1, reverse($curbuf->Get(1 .. $curbuf->Count())))
+  call s:PostBufModify()
+  let b:sortdir = !(s:GetVimVar('b:sortdir'))
+  execute (line('$') - lnum + 1)
+endfunction
+
+function! s:SortList(cmp, dir)
+  perl <<EOP
+{
+  my $cmp = VIM::Eval('a:cmp');
+  my $dir = VIM::Eval('a:dir');
+  my @lns = $curbuf->Get(1 .. $curbuf->Count());
+
+  if ($cmp eq 'channel')
+    {
+      @lns = map { $_->[0] }
+	      sort {  if ($dir) { lc($b->[1]) cmp lc($a->[1]) }
+		      else	{ lc($a->[1]) cmp lc($b->[1]) } }
+		map { [ $_, /^(\S+).*$/ ] } @lns;
+    }
+  elsif ($cmp eq 'member')
+    {
+      @lns = map { $_->[0] }
+	      sort {  if ($dir) { $b->[1] <=> $a->[1] }
+		      else	{ $a->[1] <=> $b->[1] } }
+		map { [ $_, /^\S+\s+(\d+).*$/ ] } @lns;
+    }
+  else
+    {
+      @lns = map { $_->[0] }
+	      sort {  if ($dir) { $b->[1] cmp $a->[1] }
+		      else	{ $a->[1] cmp $b->[1] } }
+		map { [ $_, /^\S+\s+\d+\s*:(.*)$/ ] } @lns;
+    }
+  $curbuf->Set(1, @lns);
+}
+EOP
+endfunction
+
+function! s:Send_ACTION(comd, args)
+  perl <<EOP
+{
+  my ($chan, $mesg) = (VIM::Eval('a:args') =~ /^(\S+) :(.+)$/);
+  send_ctcp(1, $chan, \$mesg);
+
+  unless (is_channel($chan))
+    {
+      $chan = '';
+    }
+  add_line($chan, "*$Current_Server->{'nick'}*: $mesg");
+}
+EOP
+endfunction
+
 function! s:Send_JOIN(comd, args)
   " TODO: What to do with 'JOIN 0'?  Especially when it is not supported by
   "	  the server?
@@ -1324,7 +1361,13 @@ function! s:Send_JOIN(comd, args)
 	  VIM::DoCommand("call s:OpenBuf_Channel(\"$chan\")");
 	  unless (get_channel($chan))	# not joined yet
 	    {
-	      send_msg("JOIN %s", $chan);
+	      my $cchan = $chan;
+	      if (1 && $Current_Server->{'encoding'})
+		{
+		  Encode::from_to($cchan, $Encoding,
+						$Current_Server->{'encoding'});
+		}
+	      send_msg("JOIN %s", $cchan);
 	      add_line($chan, "*: Now talking in $chan");
 	      if (VIM::Eval('!strlen(getline(1))'))
 		{
@@ -1337,10 +1380,20 @@ function! s:Send_JOIN(comd, args)
 }
 EOP
   " I don't like to call CloseCommand() in various parts, but I just want to
-  " stay here (the last open channel)
+  " stay here (the last opened channel)
   let bufnum = bufnr('%')
   call s:CloseCommand(1)
   call s:SelectWindow(bufnum)
+endfunction
+
+function! s:Send_LIST(comd, args)
+  " MEMO: Some servers don't send 321 RPL_LISTSTART, so open a list buffer
+  " befor we send the command
+  call s:OpenBuf_List()
+  call s:PreBufModify()
+  call s:BufClear()
+  call s:PostBufModify()
+  call s:SendCommand(a:comd, a:args)
 endfunction
 
 function! s:Send_NICK(comd, args)
@@ -1410,26 +1463,11 @@ EOP
   call s:CloseServer()
 endfunction
 
-function! s:Send_ACTION(comd, args)
-  perl <<EOP
-{
-  my ($chan, $mesg) = (VIM::Eval('a:args') =~ /^(\S+) :(.+)$/);
-  send_msg("PRIVMSG %s :\x01%s\x01", $chan, $mesg);
-
-  unless (is_channel($chan))
-    {
-      $chan = '';
-    }
-  add_line($chan, "*$Current_Server->{'nick'}*: $mesg");
-}
-EOP
-endfunction
-
-function! s:Send_PRIVMSG(comd, args)
+function! s:Send_NOTICE(comd, args)
   call s:SendMessage(a:comd, a:args)
 endfunction
 
-function! s:Send_NOTICE(comd, args)
+function! s:Send_PRIVMSG(comd, args)
   call s:SendMessage(a:comd, a:args)
 endfunction
 
@@ -1524,6 +1562,7 @@ function! s:Server(server)
     return
   endif
 
+  call s:CloseCommand(1)
   if server !=# s:GetVimVar('s:server')
     let s:server = server
   endif
@@ -1574,7 +1613,7 @@ function! s:Server(server)
 			    away      => 0,
 			    motd      => 0,
 			    chans     => undef,
-			    lang      => undef,
+			    encode    => undef,
 			    lastbuf   => undef	};
 
       $Current_Server = $Srevres{$sock->peerhost()} = $Servers{$server};
@@ -1636,10 +1675,18 @@ function! s:RecvData()
 
       foreach my $line (@lines)
 	{
-	  #if ($line =~ /\x1b\$/)
-	  #  {
-	  #    iconvert(\$line);
-	  #  }
+	  if ($Encoding)
+	    {
+	      unless ($Current_Server->{'motd'} || $Current_Server->{'encode'})
+		{
+		  get_encode(\$line);
+		}
+	      if ($Current_Server->{'encode'})
+		{
+		  Encode::from_to($line, $Current_Server->{'encode'},
+								  $Encoding);
+		}
+	    }
 	  parse_line(\$line);
 	}
     }
@@ -1683,6 +1730,8 @@ our $Sockets;		# IO::Select object
 
 our $USER_CHOP		= 0x01;
 our $USER_VOICE		= 0x02;
+
+our $Encoding;
 
 sub vim_getvar
 {
@@ -1737,31 +1786,26 @@ sub establish_connection
   return $sock;
 }
 
-if (0)
-  {
-    # Unusable
-    sub iconvert
+sub get_encode
+{
+  my $line  = shift;
+  my $encode= Encode::Guess->guess(${$line});
+
+  if (ref($encode) && $encode->name() !~ /^(?:ascii|utf8)$/)
     {
-      my $line = shift;
-      my $temp = ${$line};
-
-      # Fails if the line contains double quotes or backslashes.  I don't think
-      # it is avoidable, as long as vim involves.  The most feasible solution
-      # I can think of is to use perl's `Encode' module.  But it forces us to
-      # install Perl 5.8 or later, which I myself do not have.
-      $temp = VIM::Eval("iconv(\"$temp\", s:preflang, &encoding)");
-      if ($temp)
-	{
-	  ${$line} = $temp;
-	}
+      $Current_Server->{'encode'} = $encode->name();
     }
-  }
-
+}
 
 sub is_channel
 {
   # TODO: This might not be enough
   return (shift =~ /^[&#+!]/);
+}
+
+sub is_me
+{
+  return (shift eq $Current_Server->{'nick'});
 }
 
 if (0)
@@ -1844,7 +1888,9 @@ sub add_channel
 
   unless (exists($Current_Server->{'chans'}->{$chan}))
     {
-      $Current_Server->{'chans'}->{$chan} = {};
+      $Current_Server->{'chans'}->{$chan} = { umode => 0,
+					      cmode => 0,
+					      nicks => {} };
     }
 }
 
@@ -1868,6 +1914,7 @@ sub delete_channel
     {
       delete($Current_Server->{'chans'}->{$chan});
     }
+  VIM::DoCommand("call s:CloseChannel(\"$chan\")");
 }
 
 sub get_nickprefix
@@ -2098,12 +2145,11 @@ sub parse_number
   elsif ($comd == 321)	# RPL_LISTSTART
     {
       add_line('', '*: Listing channels...');
-      VIM::DoCommand('call s:OpenBuf_List()');
-      $curbuf->Delete(1, $curbuf->Count());
     }
   elsif ($comd == 322)	# RPL_LIST
     {
-      # Check if the curbuf is really a `List' buffer?
+      # TODO: It's too unefficient to do this all the time.
+      VIM::DoCommand('call s:SelectWindow(s:GetBufNum_List())');
       $curbuf->Append($curbuf->Count(), $mesg);
     }
   elsif ($comd == 323)	# RPL_LISTEND
@@ -2225,50 +2271,6 @@ sub parse_number
     }
 }
 
-sub parse_privmsg
-{
-  my ($from, $args) = @_;
-
-  if (my ($chan, $mesg) = (${$args} =~ /^(\S+) :(.*)$/))
-    {
-      my $pref;
-      if (is_channel($chan))
-	{
-	  my $nref = get_nicks($chan);
-	  $pref = get_nickprefix($nref->{$from});
-	}
-      else
-	{
-	  $chan = '';
-	}
-      # Handle CTCP messages first
-      if (process_ctcp($from, $pref, $chan, \$mesg))
-	{
-	  add_line($chan, "<$pref$from>: $mesg");
-	}
-    }
-}
-
-sub parse_notice
-{
-  my ($from, $args) = @_;
-
-  if (my ($chan, $mesg) = (${$args} =~ /^(\S+) :?(.*)$/))
-    {
-      my $pref;
-      if (is_channel($chan))
-	{
-	  my $nref = get_nicks($chan);
-	  $pref = get_nickprefix($nref->{$from});
-	}
-      else
-	{
-	  $chan = '';
-	}
-      add_line($chan, "[$pref$from]: $mesg");
-    }
-}
-
 sub parse_join
 {
   my ($from, $args) = @_;
@@ -2286,68 +2288,25 @@ sub parse_join
     }
 }
 
-sub parse_quit
+sub parse_kick
 {
   my ($from, $args) = @_;
-  my ($mesg) = (${$args} =~ /^:(.*)$/);
 
-  while (my $chan = each(%{$Current_Server->{'chans'}}))
+  if (my ($chan, $nick, $mesg) = (${$args} =~ /^(\S+) (\S+) :(.*)$/))
     {
-      if (delete_nick($from, $chan))
+
+      delete_nick($nick, $chan);
+
+      if (is_me($nick))
 	{
-	  add_line($chan, "<=: Exit $from ($mesg)");
+	  add_line('', "!: You have been kicked out of channel $chan by $from ($mesg)");
+	  delete_channel($chan);
+	}
+      else
+	{
+	  add_line($chan, "!: $from kicks out $nick ($mesg)");
 	  list_nicks($chan);
 	}
-    }
-}
-
-sub parse_part
-{
-  my ($from, $args) = @_;
-  my ($chan, $mesg) = (${$args} =~ /^(\S+) :(.*)$/);
-
-  if (delete_nick($from, $chan))
-    {
-      add_line($chan, "<-: Exit $from ($mesg)");
-      list_nicks($chan);
-
-      if ($from eq $Current_Server->{'nick'})
-	{
-	  delete_channel($chan);
-	  VIM::DoCommand("call s:CloseChannel(\"$chan\")");
-	}
-    }
-}
-
-sub parse_nick
-{
-  my ($from, $args) = @_;
-
-  if (my ($nick) = (${$args} =~ /^:(.*)$/))
-    {
-      if ($from eq $Current_Server->{'nick'})
-	{
-	  add_line('', "*: New nick $nick approved");
-	}
-      while (my $chan = each(%{$Current_Server->{'chans'}}))
-	{
-	  if (rename_nick($from, $nick, $chan))
-	    {
-	      add_line($chan, "*: $from is now known as $nick");
-	      list_nicks($chan);
-	    }
-	}
-    }
-}
-
-sub parse_topic
-{
-  my ($from, $args) = @_;
-
-  if (my ($chan, $topic) = (${$args} =~ /^(\S+) :(.*)$/))
-    {
-      add_line($chan, "*: $from sets new topic: $topic");
-      VIM::DoCommand("call s:SetChannelTopic(\"$chan\", \"$topic\")");
     }
 }
 
@@ -2390,7 +2349,7 @@ sub parse_mode
 		  if ($add)
 		    {
 		      $nref->{$nick} |= $val;
-		      if ($nick eq $Current_Server->{'nick'})
+		      if (is_me($nick))
 			{
 			  $cref->{'umode'} |= $val;
 			}
@@ -2398,7 +2357,7 @@ sub parse_mode
 		  else
 		    {
 		      $nref->{$nick} &= ~$val;
-		      if ($nick eq $Current_Server->{'nick'})
+		      if (is_me($nick))
 			{
 			  $cref->{'umode'} &= ~$val;
 			}
@@ -2418,11 +2377,11 @@ sub parse_mode
 		}
 	    }
 
+	  add_line($chan, "*: $from sets new mode: $mode");
 	  if (0)
 	    {
 	      VIM::DoCommand("call s:SetChannelMode(\"$chan\", \"$mode\")");
 	    }
-	  add_line($chan, "*: $from sets new mode: $mode");
 	}
       else
 	{
@@ -2433,12 +2392,123 @@ sub parse_mode
     }
 }
 
+sub parse_nick
+{
+  my ($from, $args) = @_;
+
+  if (my ($nick) = (${$args} =~ /^:(.*)$/))
+    {
+      if (is_me($from))
+	{
+	  add_line('', "*: New nick $nick approved");
+	}
+      while (my $chan = each(%{$Current_Server->{'chans'}}))
+	{
+	  if (rename_nick($from, $nick, $chan))
+	    {
+	      add_line($chan, "*: $from is now known as $nick");
+	      list_nicks($chan);
+	    }
+	}
+    }
+}
+
+sub parse_notice
+{
+  my ($from, $args) = @_;
+
+  if (my ($chan, $mesg) = (${$args} =~ /^(\S+) :?(.*)$/))
+    {
+      my $pref;
+      if (is_channel($chan))
+	{
+	  my $nref = get_nicks($chan);
+	  $pref = get_nickprefix($nref->{$from});
+	}
+      else
+	{
+	  $chan = '';
+	}
+      add_line($chan, "[$pref$from]: $mesg");
+    }
+}
+
+sub parse_part
+{
+  my ($from, $args) = @_;
+  my ($chan, $mesg) = (${$args} =~ /^(\S+) :(.*)$/);
+
+  if (delete_nick($from, $chan))
+    {
+      add_line($chan, "<-: Exit $from ($mesg)");
+
+      if (is_me($from))
+	{
+	  delete_channel($chan);
+	}
+      else
+	{
+	  list_nicks($chan);
+	}
+    }
+}
+
 sub parse_ping
 {
   my $args = shift;
 
   send_msg("PONG :%s", ${$args});
   add_line('', "Ping? Pong!");
+}
+
+sub parse_privmsg
+{
+  my ($from, $args) = @_;
+
+  if (my ($chan, $mesg) = (${$args} =~ /^(\S+) :(.*)$/))
+    {
+      my $pref;
+      if (is_channel($chan))
+	{
+	  my $nref = get_nicks($chan);
+	  $pref = get_nickprefix($nref->{$from});
+	}
+      else
+	{
+	  $chan = '';
+	}
+      # Handle CTCP messages first
+      if (process_ctcp($from, $pref, $chan, \$mesg))
+	{
+	  add_line($chan, "<$pref$from>: $mesg");
+	}
+    }
+}
+
+sub parse_quit
+{
+  my ($from, $args) = @_;
+  my ($mesg) = (${$args} =~ /^:(.*)$/);
+
+  while (my $chan = each(%{$Current_Server->{'chans'}}))
+    {
+      if (delete_nick($from, $chan))
+	{
+	  add_line($chan, "<=: Exit $from ($mesg)");
+	  list_nicks($chan);
+	}
+    }
+}
+
+sub parse_topic
+{
+  my ($from, $args) = @_;
+
+  if (my ($chan, $topic) = (${$args} =~ /^(\S+) :(.*)$/))
+    {
+      add_line($chan, "*: $from sets new topic: $topic");
+      VIM::DoCommand("call s:SetChannelTopic(\"$chan\", \"$topic\")");
+    }
 }
 
 sub parse_wallops
