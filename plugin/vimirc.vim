@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 Feb 2004
-" Last Change: Mon, 05 Apr 2004 21:18:41 +0900 (JST)
+" Last Change: Fri, 09 Apr 2004 01:00:53 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -64,6 +64,16 @@
 "				  Use commas to separate settings for each
 "				  server.  (Only irc.freenode.net is
 "				  supported currently)
+"
+"     let g:vimirc_log		=NUMBER
+"				  Set this to non-zero to enable logging
+"				  feature.  (default: zero)
+"				  Log will be taken for each channel and
+"				  server independently.
+"     let g:vimirc_logdir	="where logs are saved"
+"				  (default: ~/.vimirc)
+"				  The specified directory will be created
+"				  automatically.
 "
 "     let g:vimirc_partmsg	="message sent with QUIT/PART"
 "
@@ -155,7 +165,6 @@
 "
 " TODOs:
 "   * multibyte support (done? I don't think so)
-"   * logging
 "   * authentication (just add one line to send PASS)
 "   * flood protection
 "   * SSL
@@ -176,6 +185,7 @@
 "   - ctcp, including dcc stuffs (well, mostly)
 "   - timer (it hasn't been in todo list though)
 "     - auto-away
+"   - logging
 "
 " Tips:
 "   1.	If you see extreme slowness in vim startup time due to this plugin,
@@ -193,7 +203,7 @@ endif
 let s:save_cpoptions = &cpoptions
 set cpoptions&
 
-let s:version = '0.7'
+let s:version = '0.7.1'
 let s:client  = 'VimIRC '.s:version
 " Set this to zero when releasing, which I'll occasionally forget, for sure
 let s:debug = 0
@@ -206,22 +216,8 @@ endif
 " Developing functions
 "
 
-function! s:SetLastActive()
-  if !s:autoaway
-    return
-  endif
-
-  let lastactive = s:lastactive
-  let s:lastactive = localtime()
-  " Clear the `away' status only if considered to be set
-  if s:lastactive - lastactive > s:autoawaytime
-    " I just don't want to call this perl code every time you type something
-    call s:Send_GAWAY('GAWAY', '')
-  endif
-endfunction
-
-" Handle "/SET option value"
-function! s:SetVarCmd(varval)
+" "/SET option value"
+function! s:CmdSet(varval)
   if 1
     echo "/SET command not implemented yet"
     return
@@ -343,6 +339,8 @@ function! s:InitVars()
   " Preferred language.  Encoding name which Perl's Encode module can accept
   call s:SetVarIntern('vimirc_preflang')
 
+  " On/off logging feature
+  call s:SetVarIntern('vimirc_log', 0)
   " Log directory
   call s:SetVarIntern('vimirc_logdir', expand('$HOME').'/.vimirc')
   let s:logdir = s:RegularizePath(s:logdir)
@@ -358,6 +356,7 @@ function! s:InitVars()
   call s:SetVarIntern('vimirc_winmode')
   "call s:SetVarIntern('vimirc_nickwin')
 
+  " On/off auto-away feature
   call s:SetVarIntern('vimirc_autoaway', 0)
   " Threshold time to be set `away'.  MUST be in seconds
   call s:SetVarIntern('vimirc_autoawaytime')
@@ -909,8 +908,8 @@ function! s:InitBuf_Nicks(bufname, channel)
   call s:DoSettings()
   call s:DoHilite_Nicks()
   setlocal nowrap
-  nnoremap <buffer> <silent> <CR> :call <SID>SelectNickCmd(0)<CR>
-  vnoremap <buffer> <silent> <CR> :call <SID>SelectNickCmd(0)<CR>
+  nnoremap <buffer> <silent> <CR> :call <SID>SelectNickAction(0)<CR>
+  vnoremap <buffer> <silent> <CR> :call <SID>SelectNickAction(0)<CR>
   call s:SetBufNum(a:bufname, bufnr('%'))
 endfunction
 
@@ -947,39 +946,29 @@ function! s:CloseServer()
   call s:CloseCommand(1)
   call s:CloseList()
 
-  let v:errmsg = ''
-  while s:VisitServer()
-    silent! close
-    if strlen(v:errmsg)
-      break
+  let bufnum = s:GetBufNum_Server()
+  if bufnum >= 0
+    if 1 || s:winmode ==? 'single'
+      " We'll miss logging the last "ERROR :Closing Link" line.  Well, what's
+      " the matter?
+      call s:LogBuffer(bufnum)
     endif
-  endwhile
+    call s:CloseWindow(bufnum)
+  endif
 endfunction
 
 function! s:CloseList()
   let bufnum = s:GetBufNum_List()
   if bufnum >= 0
-    let v:errmsg = ''
-    while s:SelectWindow(bufnum) >= 0
-      silent! close
-      if strlen(v:errmsg)
-	break
-      endif
-    endwhile
+    call s:CloseWindow(bufnum)
   endif
 endfunction
 
 function! s:CloseChannel(channel)
-  " XXX: No fear of endless loop?
   let bufnum = s:GetBufNum_Channel(a:channel)
   if bufnum >= 0
-    let v:errmsg = ''
-    while s:SelectWindow(bufnum) >= 0
-      silent! close
-      if strlen(v:errmsg)
-	break
-      endif
-    endwhile
+    call s:LogBuffer(bufnum)
+    call s:CloseWindow(bufnum)
   endif
   call s:CloseNicks(a:channel)
 endfunction
@@ -987,13 +976,7 @@ endfunction
 function! s:CloseNicks(channel)
   let bufnum = s:GetBufNum_Nicks(a:channel)
   if bufnum >= 0
-    let v:errmsg = ''
-    while s:SelectWindow(bufnum) >= 0
-      silent! close
-      if strlen(v:errmsg)
-	break
-      endif
-    endwhile
+    call s:CloseWindow(bufnum)
   endif
 endfunction
 
@@ -1023,17 +1006,11 @@ function! s:CloseCommand(force)
     call s:PostBufModify()
 
     if a:force || !strlen(b:query)	" don't close if in query mode
-      let v:errmsg = ''
-      while s:SelectWindow(bufnum) >= 0
-	silent! close
-	if strlen(v:errmsg)
-	  break
-	endif
-      endwhile
+      call s:CloseWindow(bufnum)
       " Move the cursor back onto the channel where command mode was
       " triggered.
-      if strlen(s:channel)
-	call s:VisitChannel(s:channel)
+      if !(strlen(s:channel) && s:VisitChannel(s:channel))
+	call s:VisitServer()
       endif
       call s:HiliteLine('.')
     endif
@@ -1046,24 +1023,13 @@ function! s:CloseChat(nick, server)
 
   let bufnum = s:GetBufNum_Command(a:nick)
   if bufnum >= 0
-    let v:errmsg = ''
-    while s:SelectWindow(bufnum) >= 0
-      silent! close
-      if strlen(v:errmsg)
-	break
-      endif
-    endwhile
+    call s:CloseWindow(bufnum)
   endif
 
   let bufnum = s:GetBufNum_Chat(a:nick, a:server)
   if bufnum >= 0
-    let v:errmsg = ''
-    while s:SelectWindow(bufnum) >= 0
-      silent! close
-      if strlen(v:errmsg)
-	break
-      endif
-    endwhile
+    call s:LogBuffer(bufnum)
+    call s:CloseWindow(bufnum)
   endif
 
   let s:server = save_server
@@ -1126,14 +1092,14 @@ function! s:HandleKey(key)
     endif
     throw 'IMGONNAPOST'
   elseif char =~# '[/?]'
-    call s:SearchWord(char)
+    call s:CmdSearch(char)
   elseif char == "\<CR>"
     if s:IsBufCommand()
       call s:SendLine(1)
     elseif s:IsBufList()
       call s:JoinChannel()
     elseif s:IsBufNicks()
-      call s:SelectNickCmd(1)
+      call s:SelectNickAction(1)
     else
       execute 'normal!' char
     endif
@@ -1173,6 +1139,20 @@ function! s:HandleKey(key)
   call s:HiliteColumn('.')
   call s:SetLastActive()
   echon "\r"|redraw
+endfunction
+
+function! s:SetLastActive()
+  if !s:autoaway
+    return
+  endif
+
+  let lastactive = s:lastactive
+  let s:lastactive = localtime()
+  " Clear the `away' status only if considered to be set
+  if s:lastactive - lastactive > s:autoawaytime
+    " I just don't want to call this perl code every time you type something
+    call s:Send_GAWAY('GAWAY', '')
+  endif
 endfunction
 
 function! s:SendLine(loop)
@@ -1258,7 +1238,7 @@ function! s:SendLine(loop)
       endif
 
       if comd ==# 'SET'
-	call s:SetVarCmd(args)
+	call s:CmdSet(args)
       elseif comd ==# 'HELP'
 	call s:PrintHelp()
       elseif comd ==# 'SERVER'
@@ -1300,7 +1280,7 @@ function! s:SendLine(loop)
   endif
 endfunction
 
-function! s:SearchWord(comd)
+function! s:CmdSearch(comd)
   let word = input(a:comd)
   if strlen(word)
     let @/ = word
@@ -1323,7 +1303,7 @@ function! s:StartQuery(nick)
   call s:OpenBuf_Command()
 endfunction
 
-function! s:SelectNickCmd(loop) range
+function! s:SelectNickAction(loop) range
   if !s:IsBufNicks()
     return
   endif
@@ -1339,14 +1319,14 @@ function! s:SelectNickCmd(loop) range
   endwhile
 
   let nnick = a:lastline - a:firstline + 1
-  let comds = "&whois\n&query\n&control\n&dcc"
-  let choice= confirm("What do you do with ".nicks."?", comds)
+  let comds = "&whois\n&query\n&control\n&dcc/ctcp"
+  let choice= confirm('What do you do with '.nicks.'?', comds)
   if !choice
     return
   endif
 
   if nnick > 1 && !(choice % 2)
-    echo "Sorry, you cannot do it with mulitple persons at the same time"
+    echo 'Sorry, you cannot do it with mulitple persons at the same time'
     return
   endif
 
@@ -1375,29 +1355,67 @@ function! s:SelectNickCmd(loop) range
 
     call s:DoSend('MODE', b:channel.' '.onoff.modes.' '.nicks)
   elseif choice == 4
-    let comds = "&send\n&chat"
-    let choice= confirm("Choose one of these:", comds)
+    let comds = "&send\n&chat\n&ping\n&time\n&version\nclient&info"
+    let choice= confirm('Choose one of these:', comds)
     if !choice
       return
     endif
 
     let args = ''
-    if choice == 1
-      let fname = input("Enter filename: ")
-      if filereadable(fname)
-	let args = 'send '.nicks.' '.fname
+    if choice > 2
+      if choice == 3
+	let args = 'ping'
+      elseif choice == 4
+	let args = 'time'
+      elseif choice == 5
+	let args = 'version'
+      elseif choice == 6
+	let args = 'clientinfo'
+      endif
+      if strlen(args)
+	call s:Send_CTCP('CTCP', nicks.' '.args)
       endif
     else
-      let args = 'chat '.nicks
-    endif
-    if strlen(args)
-      call s:Send_DCC('DCC', args)
+      if choice == 1
+	let fname = input('Enter filename: ')
+	if filereadable(fname)
+	  let args = 'send '.nicks.' '.fname
+	endif
+      else
+	let args = 'chat '.nicks
+      endif
+      if strlen(args)
+	call s:Send_DCC('DCC', args)
+      endif
     endif
   endif
 
+  call s:HiliteLine('.')
   if !a:loop
     call s:MainLoop()
   endif
+endfunction
+
+"
+" Logging
+"
+
+function! s:LogBuffer(bufnum)
+  if s:log && s:SelectWindow(a:bufnum) >= 0 && s:MakeDir(s:logdir)
+    let v:errmsg = ''
+    let range = ((exists('b:lastsave') && b:lastsave < line('$')
+	  \	  ? b:lastsave : 0) + 1).',$'
+    silent! execute range.'write! >>' s:logdir.'/'.s:GenFName_Log()
+    let b:lastsave = line('$')
+  endif
+endfunction
+
+function! s:GenFName_Log()
+  " I'm prepending your nick to avoid corrupted data in case you're running
+  " multiple instances.  No locking.
+  return s:SecureBufName(s:GetCurNick().'@'.b:server.(exists('b:channel')
+	\					      ? '.'.b:channel
+	\					      : ''))
 endfunction
 
 "
@@ -1429,6 +1447,8 @@ function! s:UpdateTitleBar()
 	\(s:IsBufIRC()	? b:server.' '.(s:IsBufChannel()
 	\				? b:channel.': '.b:topic : '')
 	\		: fnamemodify(expand('%'), ':p'))
+  " NOTE: Redrawing is necessary to update the title
+  redraw
 endfunction
 
 function! s:GetStatus()
@@ -1474,7 +1494,7 @@ endfunction
 " Misc. utility functions
 "
 
-function! s:LocateLine(line)
+function! s:SearchLine(line)
   return strlen(a:line) ? search('^\V'.a:line.'\$', 'w') : 0
 endfunction
 
@@ -1503,6 +1523,16 @@ function! s:SelectWindow(bufnum)
     endif
   endif
   return winnum
+endfunction
+
+function! s:CloseWindow(bufnum)
+  let v:errmsg = ''
+  while s:SelectWindow(a:bufnum) >= 0
+    silent! close
+    if strlen(v:errmsg)
+      break
+    endif
+  endwhile
 endfunction
 
 function! s:Beep(times)
@@ -1556,7 +1586,7 @@ function! s:GetTime(short, ...)
 	\				    (a:0 && a:1 ? a:1 : localtime()))
 endfunction
 
-function! s:UpdateStatus(...)
+function! s:UpdateStatusLine(...)
   if exists(':redrawstatus')
     "execute 'redrawstatus'.(a:0 && a:1 ? '!' : '')
     redrawstatus!
@@ -1722,6 +1752,18 @@ endfunction
 "
 
 if has('perl')
+function! s:MakeDir(dir)
+  if isdirectory(a:dir)
+    return 1
+  endif
+
+  perl <<EOP
+{
+  VIM::DoCommand('return '.my_mkdir(scalar(VIM::Eval('a:dir'))));
+}
+EOP
+endfunction
+
 function! s:SetEncoding()
   " The idea is, we should load & use conversion-related codes only if
   " necessary
@@ -1822,21 +1864,20 @@ function! s:DoTimer()
   if lasttime <= s:lasttime
     return
   endif
+  let s:lasttime = lasttime
 
   perl <<EOP
 {
-  my $time = VIM::Eval('l:lasttime');
   my $save_cur = $Current_Server;
 
-  do_timer($time);
+  do_timer(scalar(VIM::Eval('l:lasttime')));
 
   $Current_Server = $save_cur;
 }
 EOP
 
-  let s:lasttime = lasttime
   call s:UpdateTitleBar()
-  call s:UpdateStatus()
+  call s:UpdateStatusLine()
 endfunction
 
 function! s:Send_ACTION(comd, args)
@@ -1935,7 +1976,7 @@ function! s:Send_CTCP(comd, args)
 	  $args = time();
 	}
 
-      unless (is_channel($to))	# sending ctcp to channel is rude
+      unless (is_channel($to))	# sending ctcp to channel is rude except ACTION
 	{
 	  ctcp_send(1, $to, "%s%s", $comd, ($args ? " $args" : ""));
 	}
@@ -2065,9 +2106,7 @@ function! s:Send_DCC(comd, args)
 	    }
 	  if ($dcc)
 	    {
-	      my $nick = do_escape($nick);
-	      VIM::DoCommand("call s:OpenBuf_Chat(\"=$nick\",
-		    \			\"$dcc->{'iserver'}->{'server'}\")");
+	      vim_open_chat("=$nick", $dcc->{'iserver'}->{'server'});
 	    }
 	}
     }
@@ -2091,39 +2130,46 @@ endfunction
 function! s:Send_JOIN(comd, args)
   perl <<EOP
 {
-  my $chans = VIM::Eval('a:args');
-
-  if ($chans eq '0')
+  unless ($Current_Server->{'conn'} & $CS_LOGIN)
     {
-      irc_send("JOIN %s", $chan);
+      vim_printf("Do /SERVER to get connected");
     }
   else
     {
-      my (@chans, @keys);
+      my $chans = VIM::Eval('a:args');
 
-      if (my ($chans, $keys) = ($chans =~ /^(\S+)(?:\s+(\S+))?$/))
+      if ($chans eq '0')
 	{
-	  @chans = split(/,/, $chans);
-	  @keys  = split(/,/, $keys);
+	  irc_send("JOIN %s", $chan);
 	}
-
-      foreach my $chan (@chans)
+      else
 	{
-	  my $key = shift(@keys);
+	  my (@chans, @keys);
 
-	  if (is_channel($chan))
+	  if (my ($chans, $keys) = ($chans =~ /^(\S+)(?:\s+(\S+))?$/))
 	    {
-	      VIM::DoCommand('call s:OpenBuf_Channel("'.do_escape($chan).'")');
+	      @chans = split(/,/, $chans);
+	      @keys  = split(/,/, $keys);
+	    }
 
-	      unless (find_channel($chan))  # not joined yet
+	  foreach my $chan (@chans)
+	    {
+	      my $key = shift(@keys);
+
+	      if (is_channel($chan))
 		{
-		  irc_send("JOIN %s%s", $chan, ($key ? " $key" : ""));
-		  irc_add_line($chan, "*: Now talking in %s", $chan);
-		  unless ($curbuf->Get(1))
+		  vim_open_chan($chan);
+
+		  unless (find_channel($chan))  # not joined yet
 		    {
-		      $curbuf->Delete(1);
+		      irc_send("JOIN %s%s", $chan, ($key ? " $key" : ""));
+		      irc_add_line($chan, "*: Now talking in %s", $chan);
+		      unless ($curbuf->Get(1))
+			{
+			  $curbuf->Delete(1);
+			}
+		      add_channel($chan);
 		    }
-		  add_channel($chan);
 		}
 	    }
 	}
@@ -2247,7 +2293,7 @@ function! s:Send_QUIT(comd, args)
 
   foreach my $cref (@{$Current_Server->{'chans'}})
     {
-      VIM::DoCommand('call s:CloseChannel("'.do_escape($cref->{'name'}).'")')
+      vim_close_chan($cref->{'name'});
     }
 
   $Current_Server->{'conn'} |= $CS_QUIT;
@@ -2351,9 +2397,8 @@ function! s:GetCurNick()
     {
       $nick = vim_getvar('s:nick');
     }
-  $nick = do_escape($nick);
 
-  VIM::DoCommand("return \"$nick\"");
+  VIM::DoCommand('return "'.do_escape($nick).'"');
 }
 EOP
 endfunction
@@ -2366,8 +2411,9 @@ function! s:QuitServers()
     {
       if ($server->{'conn'} & $CS_LOGIN)
 	{
+	  # QUIT normally so that logs can be taken
 	  $Current_Server = $server;
-	  irc_send("QUIT");
+	  VIM::DoCommand("call s:Send_QUIT('QUIT', '')");
 	}
     }
 }
@@ -2421,9 +2467,7 @@ function! s:Server(server)
   $
 
   if close
-    while s:SelectWindow(close) >= 0
-      close
-    endwhile
+    call s:CloseWindow(close)
   endif
   redraw
 
@@ -2600,6 +2644,13 @@ sub close_server
   $server->{'motd'}   = 0;
   $server->{'umode'}  = undef;
   $server->{'lastbuf'}= undef;
+
+  if ($server->{'conn'} & $CS_QUIT)
+    {
+      $Current_Server->{'chans'}  = [];
+      $Current_Server->{'timers'} = [];
+    }
+
   conn_close($server);
 }
 
@@ -2662,7 +2713,8 @@ sub post_login_server
 
   if (@{$server->{'chans'}})
     {
-      # Re-join channels
+      # When auto-connecting after disconnect, re-join channels.
+      # NOTE: `chans' should have been cleared if user "/QUIT"ted
       foreach my $cref (@{$server->{'chans'}})
 	{
 	  my $args = [ "JOIN %s%s", $cref->{'name'}, $cref->{'key'}
@@ -2702,15 +2754,20 @@ sub conn_open
   use IO::Socket;
 
   my $server = shift;
-  my $sock = IO::Socket::INET->new( PeerAddr  => $server->{'server'},
+  my $sock;
+
+  if ($server->{'server'} && $server->{'port'})
+    {
+      $sock = IO::Socket::INET->new(PeerAddr  => $server->{'server'},
 				    PeerPort  => $server->{'port'},
 				    Proto     => 'tcp',
-				    Timeout   => 10
-				  );
-  if ($sock)
-    {
-      $server->{'sock'} = $sock;
+				    Timeout   => 10);
+      if ($sock)
+	{
+	  $server->{'sock'} = $sock;
+	}
     }
+
   return defined($sock);
 }
 
@@ -2784,9 +2841,7 @@ sub irc_add_line
   VIM::DoCommand('call s:PreBufModify()');
   # I think Vim's strftime is much faster than perl's equivalent
   $curbuf->Append($curbuf->Count(), sprintf("%s %s$fmt",
-					    scalar(VIM::Eval('s:GetTime(1)')),
-					    $cname,
-					    @_));
+					    vim_gettime(1), $cname, @_));
   unless ($Current_Server->{'away'})
     {
       # Shouldn't scroll down nor beep while you're away
@@ -2803,13 +2858,11 @@ sub irc_chat_line
   my $fmt  = shift;
   my $bnum = VIM::Eval("bufnr('%')");
 
-  VIM::DoCommand("call s:OpenBuf_Chat(\"$nick\",
-	\				    \"$Current_Server->{'server'}\")");
+  vim_open_chat($nick, $Current_Server->{'server'});
   VIM::DoCommand('call s:PreBufModify()');
 
   $curbuf->Append($curbuf->Count(), sprintf("%s $fmt",
-					    scalar(VIM::Eval('s:GetTime(1)')),
-					    @_));
+					    vim_gettime(1), @_));
   unless ($Current_Server->{'away'})
     {
       # Shouldn't scroll down nor beep while you're away
@@ -2877,7 +2930,7 @@ sub irc_recv
 
 sub irc_send
 {
-  my $fmt = shift;
+  my $fmt  = shift;
   my @args = @_;
 
   if ($ENC_VIM && $ENC_IRC)
@@ -2933,7 +2986,10 @@ sub do_timer
 	  $Current_Server = $server;
 
 	  do_auto_ping($server, $time);
-	  do_auto_away($server, $time);
+	  if (!$server->{'away'} && vim_getvar('s:autoaway'))
+	    {
+	      do_auto_away($server, $time);
+	    }
 
 	  foreach my $timer (@{$server->{'timers'}})
 	    {
@@ -2956,13 +3012,13 @@ sub do_timer
 sub do_auto_away
 {
   my ($server, $time) = @_;
+  my $lastactive = vim_getvar('s:lastactive');
 
-  if (vim_getvar('s:autoaway') && !$server->{'away'}
-      && $time - vim_getvar('s:lastactive') > vim_getvar('s:autoawaytime'))
+  if ($time - $lastactive > vim_getvar('s:autoawaytime'))
     {
       irc_add_line('', "*: Auto-awaying...");
       $server->{'away'} = sprintf("I think I'm gone (been idle since %s).",
-			      scalar(VIM::Eval('s:GetTime(0, s:lastactive)')));
+						vim_gettime(0, $lastactive));
       irc_send("AWAY :%s", $server->{'away'});
     }
 }
@@ -3092,12 +3148,12 @@ sub ctcp_query_ping
 
 sub ctcp_query_time
 {
-  ctcp_send(0, shift, "%s :%s", shift, scalar(VIM::Eval('s:GetTime(0)')));
+  ctcp_send(0, shift, "%s %s", shift, vim_gettime(0));
 }
 
 sub ctcp_query_version
 {
-  ctcp_send(0, shift, "%s :%s", shift, vim_getvar('s:client'));
+  ctcp_send(0, shift, "%s %s", shift, vim_getvar('s:client'));
 }
 
 sub process_ctcp_query
@@ -3303,13 +3359,13 @@ sub dcc_ask_accept_offer
 {
   my $dcc  = shift;
   my $mesg = sprintf("%s is offering DCC %s to you.  Accept it?",
-		      do_escape($dcc->{'nick'}),
+		      $dcc->{'nick'},
 		      (($dcc->{'flags'} & $DCC_TYPE) == $DCC_FILERECV
 			? 'SEND'
 			: $DCC_TYPES[$dcc->{'flags'} & $DCC_TYPE]));
 
-  VIM::DoCommand('call s:Beep(2)');
-  return scalar(VIM::Eval("s:GetConf_YN(\"$mesg\")"));
+  vim_beep(2);
+  return vim_getconf($mesg);
 }
 
 sub dcc_show_list
@@ -3380,17 +3436,13 @@ sub dcc_change_nick
     }
 }
 
-sub dcc_add_line
+sub dcc_chat_line
 {
   my ($dcc, $itsme) = @_;
   my $bnum = VIM::Eval("bufnr('%')");
 
-    {
-      my $nick = do_escape($dcc->{'nick'});
-      VIM::DoCommand("call s:OpenBuf_Chat(\"=$nick\",
-	    \				\"$dcc->{'iserver'}->{'server'}\")");
-      VIM::DoCommand("call s:PreBufModify()");
-    }
+  vim_open_chat("=$dcc->{'nick'}", $dcc->{'iserver'}->{'server'});
+  VIM::DoCommand('call s:PreBufModify()');
 
   foreach my $line (split(/\x0D?\x0A/, $dcc->{'linebuf'}))
     {
@@ -3402,7 +3454,7 @@ sub dcc_add_line
 	}
       $curbuf->Append($curbuf->Count(),
 		      sprintf("%s %s%s%s: %s",
-			      scalar(VIM::Eval('s:GetTime(1)')),
+			      vim_gettime(1),
 			      ($action ? '*' : '='),
 			      ($itsme
 				? $dcc->{'iserver'}->{'nick'}
@@ -3665,9 +3717,7 @@ sub dcc_close
       if (   (($dcc->{'flags'} & $DCC_TYPE) == $DCC_CHATRECV)
 	  || (($dcc->{'flags'} & $DCC_TYPE) == $DCC_CHATSEND))
 	{
-	  my $nick = do_escape($dcc->{'nick'});
-	  VIM::DoCommand("call s:CloseChat(\"=$nick\",
-		\			  \"$dcc->{'iserver'}->{'server'}\")");
+	  vim_close_chat("=$dcc->{'nick'}", $dcc->{'iserver'}->{'server'});
 	}
       del_dccclient($dcc);
     }
@@ -3871,7 +3921,7 @@ sub dcc_recv_chat
 	  vim_printf('LINE NOT ENDING WITH \n!');
 	}
       $dcc->{'bytesread'} += $bytesread;
-      dcc_add_line($dcc);
+      dcc_chat_line($dcc);
     }
   else
     {
@@ -3896,7 +3946,7 @@ sub dcc_send_chat
       if (my $bytessent = syswrite($dcc->{'sock'}, $dcc->{'linebuf'}))
 	{
 	  $dcc->{'bytessent'} += $bytessent;
-	  dcc_add_line($dcc, 1);
+	  dcc_chat_line($dcc, 1);
 	}
     }
 }
@@ -3940,7 +3990,7 @@ sub dcc_check
 	    }
 	  elsif (($dcc->{'flags'} & $DCC_TYPE) == $DCC_CHATRECV)
 	    {
-	      # MEMO: `send' flag must already have been dropped off
+	      # MEMO: `send' flag must have already been dropped off
 	      dcc_recv_chat($dcc);
 	    }
 	}
@@ -4106,7 +4156,7 @@ sub del_channel
 	  last;
 	}
     }
-  VIM::DoCommand('call s:CloseChannel("'.do_escape($chan).'")');
+  vim_close_chan($chan);
 }
 
 #
@@ -4584,7 +4634,7 @@ sub parse_number
     }
   elsif ($comd == 301)	# RPL_AWAY
     {
-      if (my ($nick, $mesg) = ($mesg =~ /^(\S+) :(.*)$/))
+      if (my ($nick, $mesg) = ($mesg =~ /^(\S+)\s+:(.*)$/))
 	{
 	  irc_add_line('', "%s is away: %s", $nick, $mesg);
 	}
@@ -4629,7 +4679,7 @@ sub parse_number
     }
   elsif ($comd == 312)	# RPL_WHOISSERVER
     {
-      if (my ($nick, $server) = ($mesg =~ /^(\S+) (.*)$/))
+      if (my ($nick, $server) = ($mesg =~ /^(\S+)\s+(.+)$/))
 	{
 	  irc_add_line('', "%s using %s", $nick, $server);
 	}
@@ -4640,7 +4690,7 @@ sub parse_number
     }
   elsif ($comd == 317)	# RPL_WHOISIDLE
     {
-      if (my ($nick, $idle, $signon) = ($mesg =~ /^(\S+) (\d+)(?: (\d+))?/))
+      if (my ($nick, $idle, $signon) = ($mesg =~ /^(\S+)\s+(\d+)(?:\s+(\d+))?/))
 	{
 	  $idle = sprintf("%02d:%02d:%02d",
 			  ($idle / 3600),
@@ -4650,27 +4700,27 @@ sub parse_number
 			  $nick,
 			  $idle,
 			  ($signon
-			    ? ', signed on '.VIM::Eval("s:GetTime(0, $signon)")
+			    ? ', signed on '.vim_gettime(0, $signon)
 			    : ''));
 	}
     }
   elsif ($comd == 318 || $comd == 369)	# RPL_ENDOFWHOIS
     {
-      if (my ($nick, $mesg) = ($mesg =~ /^(\S+) :?(.*)$/))
+      if (my ($nick, $mesg) = ($mesg =~ /^(\S+)\s+:?(.+)$/))
 	{
 	  irc_add_line('', "%s %s", $nick, $mesg);
 	}
     }
   elsif ($comd == 319)	# RPL_WHOISCHANNELS
     {
-      if (my ($nick, $chan) = ($mesg =~ /^(\S+) :(.*)$/))
+      if (my ($nick, $chan) = ($mesg =~ /^(\S+)\s+:?(.+)$/))
 	{
 	  irc_add_line('', "%s on %s", $nick, $chan);
 	}
     }
-  elsif ($comd == 320)	#
+  elsif ($comd == 320)	# I see "is an identified user" on dancer-ircd
     {
-      if (my ($nick, $mesg) = ($mesg =~ /^(\S+) :(.*)$/))
+      if (my ($nick, $mesg) = ($mesg =~ /^(\S+)\s+:?(.+)$/))
 	{
 	  irc_add_line('', "%s %s", $nick, $mesg);
 	}
@@ -4698,7 +4748,7 @@ sub parse_number
     }
   elsif ($comd == 324)	# RPL_CHANNELMODEIS
     {
-      if (my ($chan, $mode) = ($mesg =~ /^(\S+) :?(\S+)/))
+      if (my ($chan, $mode) = ($mesg =~ /^(\S+)\s+:?(\S+)/))
 	{
 	  $chan = do_escape($chan);
 	  VIM::DoCommand("call s:SetChannelMode(\"$chan\", \"$mode\")");
@@ -4706,22 +4756,22 @@ sub parse_number
     }
   elsif ($comd == 329)
     {
-      if (my ($chan, $time) = ($mesg =~ /^(\S+) (\d+)$/))
+      if (my ($chan, $time) = ($mesg =~ /^(\S+)\s+(\d+)$/))
 	{
-	  $time = VIM::Eval("s:GetTime(0, $time)");
-	  irc_add_line($chan, "*: %s came into existence on %s", $chan, $time);
+	  irc_add_line($chan, "*: %s came into existence on %s", $chan,
+							vim_gettime(0, $time));
 	}
     }
   elsif ($comd == 331)	# RPL_NOTOPIC
     {
-      if (my ($chan, $mesg) = ($mesg =~ /^(\S+) :?(.*)$/))
+      if (my ($chan, $mesg) = ($mesg =~ /^(\S+)\s+:?(.*)$/))
 	{
 	  irc_add_line($chan, "*: %s", $mesg);
 	}
     }
   elsif ($comd == 332)	# RPL_TOPIC
     {
-      if (my ($chan, $topic) = ($mesg =~ /^(\S+) :(.*)$/))
+      if (my ($chan, $topic) = ($mesg =~ /^(\S+)\s+:(.*)$/))
 	{
 	  irc_add_line($chan, "*: Topic for %s:", $chan);
 	  irc_add_line($chan, "*: %s", $topic);
@@ -4735,10 +4785,10 @@ sub parse_number
     }
   elsif ($comd == 333)
     {
-      if (my ($chan, $nick, $time) = ($mesg =~ /^(\S+) (\S+) (\d+)$/))
+      if (my ($chan, $nick, $time) = ($mesg =~ /^(\S+)\s+(\S+)\s+(\d+)$/))
 	{
 	  irc_add_line($chan, "*: Topic set by %s at %s", $nick,
-				    scalar(VIM::Eval("s:GetTime(0, $time)")));
+							vim_gettime(0, $time));
 	}
     }
   elsif ($comd == 341)	# RPL_INVITING
@@ -4750,18 +4800,19 @@ sub parse_number
     }
   elsif ($comd == 352)	# RPL_WHOREPLY
     {
-      my ($chan, $user, $host, $server, $nick, $flag, $hop, $real) =
-		($mesg =~ /^(\S+) (\S+) (\S+) (\S+) (\S+) (.*?) :(\d+) (.*)$/);
-      irc_add_line('', "%s %s %s %s@%s (%s)", $chan, $nick, $flag, $user,
-								$host, $real);
+      # Discarding the hopcount
+      my ($chan, $user, $host, $server, $nick, $flag, undef, $real) =
+		($mesg =~ /^(\S+) (\S+) (\S+) (\S+) (\S+) (\S+) :(\d+) (.+)$/);
+      irc_add_line('', "%-16s %-12s %-3s %s@%s (%s)",
+			$chan, $nick, $flag, $user, $host, $real);
     }
   elsif ($comd == 353)	# RPL_NAMREPLY
     {
-      my ($type, $chan, $nicks) = ($mesg =~ /^(.) (\S+) :(.*)$/);
+      my ($type, $chan, $nicks) = ($mesg =~ /^(.)\s+(\S+)\s+:(.+)$/);
 
       if (find_channel($chan))
 	{
-	  foreach my $nick (split(/ +/, $nicks))
+	  foreach my $nick (split(/\s+/, $nicks))
 	    {
 	      my $mode = 0;
 	      if ($nick =~ s/^@//)
@@ -4839,12 +4890,10 @@ sub parse_invite
     {
       irc_add_line('', "!: %s invites you to channel %s", $from, $chan);
       # Ask user to join
-      $from = do_escape($from);
-      $chan = do_escape($chan);
-      VIM::DoCommand('call s:Beep(2)');
-      if (VIM::Eval("s:GetConf_YN(\"$from invites you to join $chan. Accept it?\")"))
+      vim_beep(2);
+      if (vim_getconf("$from invites you to join $chan. Accept it?"))
 	{
-	  VIM::DoCommand("call s:Send_JOIN('JOIN', \"$chan\")");
+	  VIM::DoCommand('call s:Send_JOIN("JOIN", "'.do_escape($chan).'")');
 	}
     }
 }
@@ -5203,7 +5252,7 @@ sub do_urlencode
 sub my_mkdir
 {
   my $dir = shift;
-  # Dunno why perl doesn't have `pwd'
+  # Dunno why perl doesn't have `pwd'.  Or does it?
   my $cwd = VIM::Eval('getcwd()');
 
   unless (-d $dir)
@@ -5223,7 +5272,7 @@ sub my_mkdir
     }
 
   VIM::DoCommand("cd $cwd");
-  return (-d $dir);
+  return (-d $dir) + 0;
 }
 
 sub vim_getvar
@@ -5237,6 +5286,11 @@ sub vim_printf
   VIM::Msg(sprintf(shift, @_));
 }
 
+sub vim_getconf
+{
+  return scalar(VIM::Eval('s:GetConf_YN("'.do_escape(shift).'")'));
+}
+
 sub vim_beep
 {
   VIM::DoCommand('call s:Beep('.shift.')');
@@ -5244,7 +5298,32 @@ sub vim_beep
 
 sub vim_search
 {
-  return scalar(VIM::Eval('s:LocateLine("'.do_escape(shift).'")'));
+  return scalar(VIM::Eval('s:SearchLine("'.do_escape(shift).'")'));
+}
+
+sub vim_gettime
+{
+  return scalar(VIM::Eval('s:GetTime('.shift.', '.shift.')'));
+}
+
+sub vim_open_chat
+{
+  VIM::DoCommand('call s:OpenBuf_Chat("'.do_escape(shift).'", "'.shift.'")');
+}
+
+sub vim_close_chat
+{
+  VIM::DoCommand('call s:CloseChat("'.do_escape(shift).'", "'.shift.'")');
+}
+
+sub vim_close_chan
+{
+  VIM::DoCommand('call s:CloseChannel("'.do_escape(shift).'")');
+}
+
+sub vim_open_chan
+{
+  VIM::DoCommand('call s:OpenBuf_Channel("'.do_escape(shift).'")');
 }
 
 EOP
