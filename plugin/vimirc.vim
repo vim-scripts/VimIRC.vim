@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 Feb 2004
-" Last Change: Tue, 15 Mar 2005 13:06:45 +0900 (JST)
+" Last Change: Wed, 16 Mar 2005 21:53:33 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -295,7 +295,7 @@
 if exists('g:loaded_vimirc') || &compatible
   finish
 endif
-let s:version = '0.9.12'
+let s:version = '0.9.13'
 
 let s:debug = (s:version =~# '-devel$')
 if !s:debug
@@ -715,7 +715,7 @@ function! s:MainLoop()
     " Get out of the loop
     " NOTE: You cannot see new messages posted while posting
   catch /^Vim:Interrupt$/
-    if 1 && s:IsBufCommand()
+    if 1 && s:IsBufType_Command()
       startinsert
     endif
   catch
@@ -890,75 +890,80 @@ function! s:SecureChannel(channel)
   return s:EscapeFName(tolower(a:channel))
 endfunction
 
-function! s:IsBufVar(bufnum, bufvar)
-  return strlen(getbufvar(a:bufnum, a:bufvar))
+function! s:IsBufType_IRC(...)
+  let bufnum = (a:0 && a:1 >= 0) ? a:1 : bufnr('%')
+  return (!match(bufname(bufnum), s:bufname)
+	\ && s:ExistsBufVar(bufnum, 'server'))
 endfunction
 
-function! s:IsBufIRC(...)
+function! s:IsBufType_ChanChat(...)
   let bufnum = (a:0 && a:1 >= 0) ? a:1 : bufnr('%')
-  return !match(bufname(bufnum), s:bufname) && s:IsBufVar(bufnum, 'server')
+  return (s:IsBufType_Channel(bufnum) || s:IsBufType_Chat(bufnum))
 endfunction
 
 " Whether this is an appropriate place over which to open another
 " channel/server
-function! s:IsBufChanServ(...)
+function! s:IsBufType_ChanServ(...)
   let bufnum = (a:0 && a:1 >= 0) ? a:1 : bufnr('%')
-  return (  s:IsBufChannel(bufnum) || s:IsBufChat(bufnum)
-	\|| s:IsBufServer(bufnum) || s:IsBufList(bufnum))
+  return (  s:IsBufType_Channel(bufnum) || s:IsBufType_Chat(bufnum)
+	\|| s:IsBufType_Server(bufnum)  || s:IsBufType_List(bufnum))
 endfunction
 
-function! s:IsBufInfo(...)
-  return !match(bufname(a:0 && a:1 ? a:1 : '%'), s:bufname_info)
+function! s:IsBufType_Info(...)
+  return !match(bufname(a:0 && a:1 >= 0 ? a:1 : '%'), s:bufname_info)
 endfunction
 
-function! s:IsBufServer(...)
+function! s:IsBufType_Server(...)
   let bufnum = (a:0 && a:1 >= 0) ? a:1 : bufnr('%')
-  return !match(bufname(bufnum), s:bufname_server)
-	\				      && s:IsBufVar(bufnum, 'server')
+  return (!match(bufname(bufnum), s:bufname_server)
+	\ && s:ExistsBufVar(bufnum, 'server'))
 endfunction
 
-function! s:IsBufList(...)
+function! s:IsBufType_List(...)
   let bufnum = (a:0 && a:1 >= 0) ? a:1 : bufnr('%')
-  return !match(bufname(bufnum), s:bufname_list)
-	\				    && s:IsBufVar(bufnum, 'server')
+  return (!match(bufname(bufnum), s:bufname_list)
+	\ && s:ExistsBufVar(bufnum, 'server'))
 endfunction
 
-function! s:IsBufChannel(...)
+function! s:IsBufType_Channel(...)
   let bufnum = (a:0 && a:1 >= 0) ? a:1 : bufnr('%')
-  return !match(bufname(bufnum), s:bufname_channel)
-	\ && s:IsBufVar(bufnum, 'server') && s:IsBufVar(bufnum, 'channel')
+  return (!match(bufname(bufnum), s:bufname_channel)
+	\ && s:ExistsBufVar(bufnum, 'server')
+	\ && s:ExistsBufVar(bufnum, 'channel'))
 endfunction
 
-function! s:IsBufNicks(...)
+function! s:IsBufType_Nicks(...)
   let bufnum = (a:0 && a:1 >= 0) ? a:1 : bufnr('%')
-  return !match(bufname(bufnum), s:bufname_nicks)
-	\ && s:IsBufVar(bufnum, 'server') && s:IsBufVar(bufnum, 'channel')
+  return (!match(bufname(bufnum), s:bufname_nicks)
+	\ && s:ExistsBufVar(bufnum, 'server')
+	\ && s:ExistsBufVar(bufnum, 'channel'))
 endfunction
 
-function! s:IsBufCommand(...)
+function! s:IsBufType_Command(...)
   let bufnum = (a:0 && a:1 >= 0) ? a:1 : bufnr('%')
-  return !match(bufname(bufnum), s:bufname_command)
-	\ && s:IsBufVar(bufnum, 'server')
+  return (!match(bufname(bufnum), s:bufname_command)
+	\ && s:ExistsBufVar(bufnum, 'server'))
 endfunction
 
-function! s:IsBufChat(...)
+function! s:IsBufType_Chat(...)
   let bufnum = (a:0 && a:1 >= 0) ? a:1 : bufnr('%')
-  return !match(bufname(bufnum), s:bufname_chat)
-	\ && s:IsBufVar(bufnum, 'server') && s:IsBufVar(bufnum, 'channel')
+  return (!match(bufname(bufnum), s:bufname_chat)
+	\ && s:ExistsBufVar(bufnum, 'server')
+	\ && s:ExistsBufVar(bufnum, 'channel'))
 endfunction
 
-function! s:IsBufServerDead()
-  return (s:IsBufServer() && s:GetVimVar('b:dead'))
+function! s:IsBufType_ServerDead()
+  return (s:IsBufType_Server() && s:GetVimVar('b:dead'))
 endfunction
 
 " Whether the buffer is a currently active server/channel/chat
-function! s:IsBufChannelCurrent()
+function! s:IsBufType_ChannelCurrent()
   return (s:GetVimVar('b:server').s:GetVimVar('b:channel') ==#
 	\		      s:GetVimVar('s:server').s:GetVimVar('s:channel'))
 endfunction
 
-function! s:IsBufChannelOther()
-  return !s:IsBufChannelCurrent()
+function! s:IsBufType_ChannelOther()
+  return !s:IsBufType_ChannelCurrent()
 endfunction
 
 function! s:IsServer(server)
@@ -970,25 +975,24 @@ function! s:IsChannel(channel)
 endfunction
 
 function! s:IsNick(channel)
-  " To explain the latter: negate (a:channel contains invalid characters)
-  return (strlen(a:channel) && !(a:channel =~? '[^-0-9\\\[\]^`a-z{}]'))
+  " To explain the latter: negate (a:channel contains any invalid character)
+  "			   `=> a:channel is composed of valid characters only
+  return (strlen(a:channel) && !(a:channel =~? '[^-0-9\[-`a-z{-}]'))
 endfunction
 
 function! s:CanOpenChanServ()
-  if !s:IsBufChanServ()
+  if !s:IsBufType_ChanServ()
     let i = 1
     while 1
       let bufnum = winbufnr(i)
-      if bufnum < 0 || s:IsBufChanServ(bufnum)
-	if bufnum >= 0
-	  call s:BufVisit(bufnum)
-	endif
+      if s:IsBufType_ChanServ(bufnum) || (bufnum < 0)
+	call s:BufVisit(bufnum)
 	break
       endif
       let i = i + 1
     endwhile
   endif
-  return s:IsBufChanServ()
+  return s:IsBufType_ChanServ()
 endfunction
 
 function! s:VisitBuf_ChanChat(channel, ...)
@@ -996,7 +1000,7 @@ function! s:VisitBuf_ChanChat(channel, ...)
 	\		? 't' : 'nnel'}(a:channel, (a:0 ? a:1 : s:server))
 endfunction
 
-function! s:VisitBuf_ChanChatServ(channel, ...)
+function! s:VisitBuf_ChanServ(channel, ...)
   let retval = 0
   let server = a:0 ? a:1 : s:server
   if strlen(a:channel)
@@ -1196,7 +1200,7 @@ function! s:OpenBuf_Nicks(channel, ...)
 endfunction
 
 function! s:OpenBuf_Command()
-  if !(s:opened && s:IsBufIRC())
+  if !(s:opened && s:IsBufType_IRC())
     return
   endif
 
@@ -1208,8 +1212,8 @@ function! s:OpenBuf_Command()
   let bufnum  = s:GetBufNum_Command(channel)
   let loaded  = (bufnum >= 0)
 
-  if bufnum != bufnr('%')
-    call s:VisitBuf_ChanChatServ(channel)
+  if !s:IsBufCurrent(bufnum)
+    call s:VisitBuf_ChanServ(channel)
   endif
 
   " &equalalways will be restored when the command window is closed
@@ -1294,6 +1298,25 @@ function! s:PostOpenBuf_Chat()
   endif
 endfunction
 
+function! s:SplitBuf_Channel(channel)
+  if s:VisitBuf_ChanChat(a:channel)
+    return
+  endif
+
+  let ischan = s:IsBufType_ChanChat()
+  if ischan
+    call s:CloseBuf_Nicks(b:channel, b:server)
+  endif
+  if s:OpenBuf('belowright split')
+    call s:DoWincmd('k')
+    call s:DoNormal('zb')
+    if ischan
+      call s:OpenBuf_Nicks(b:channel, b:server)
+    endif
+    call s:DoWincmd('j')
+  endif
+endfunction
+
 function! s:ModifyBuf(modify, ...)
   " XXX: This should NOT be called recursively
   let bufnum = a:0 ? a:1 : bufnr('%')
@@ -1308,7 +1331,7 @@ function! s:ModifyBuf(modify, ...)
       let &undolevels = s:save_undolevels
       unlet s:save_undolevels
     endif
-    if 0 && !s:IsBufCommand(bufnum)
+    if 0 && !s:IsBufType_Command(bufnum)
       call setbufvar(bufnum, '&modifiable', 0)
     endif
   endif
@@ -1731,7 +1754,7 @@ function! s:CloseBuf_Command(destbuf, purge)
     else
       " Move the cursor back onto the channel/server where command mode was
       " (supposedly) triggered.
-      call s:VisitBuf_ChanChatServ(s:channel)
+      call s:VisitBuf_ChanServ(s:channel)
     endif
     call s:HiliteBuffer()
   endif
@@ -1767,7 +1790,7 @@ function! s:CloseWin_What(cond)
   let v:errmsg = ''
   let curbuf = bufnr('%')
 
-  call s:ExecuteSilent('wincmd b')
+  call s:DoWincmd('b')
   while 1
     " TODO: Accept arguments and/or multiple conditions?
     if {a:cond}()
@@ -1779,7 +1802,7 @@ function! s:CloseWin_What(cond)
     elseif winnr() == 1
       break
     endif
-    call s:ExecuteSilent('wincmd W')
+    call s:DoWincmd('W')
   endwhile
   call s:BufVisit(curbuf)
 
@@ -1787,24 +1810,24 @@ function! s:CloseWin_What(cond)
 endfunction
 
 function! s:CloseWin_IRC()
-  if !s:CloseWin_What('s:IsBufIRC')
+  if !s:CloseWin_What('s:IsBufType_IRC')
     call s:ExecuteSilent('enew!')
   endif
 endfunction
 
 function! s:CloseWin_DeadServer()
-  call s:CloseWin_What('s:IsBufServerDead')
+  call s:CloseWin_What('s:IsBufType_ServerDead')
 endfunction
 
 function! s:CloseWin_List()
-  call s:CloseWin_What('s:IsBufList')
+  call s:CloseWin_What('s:IsBufType_List')
 endfunction
 
 " Implements VimIRC version of ":only": close all buffers except the current
 " one (where user did "/set winmode")
 " XXX: This sometimes crashes Vim
 function! s:CloseWin_Other()
-  call s:CloseWin_What('s:IsBufChannelOther')
+  call s:CloseWin_What('s:IsBufType_ChannelOther')
   call s:CloseWin_List()
 endfunction
 
@@ -1818,19 +1841,19 @@ function! s:ResizeWin(restore)
   endif
   let curbuf = bufnr('%')
 
-  call s:ExecuteSilent('wincmd b')
+  call s:DoWincmd('b')
   while 1
-    if s:IsBufNicks()
+    if s:IsBufType_Nicks()
       call s:ScreenResize(s:nickswidth, 1)
-    elseif s:IsBufCommand()
+    elseif s:IsBufType_Command()
       call s:ScreenResize(s:cmdheight, 0)
-    elseif s:IsBufInfo()
+    elseif s:IsBufType_Info()
       call s:ScreenResize(s:infowidth, 1)
     endif
     if winnr() == 1
       break
     endif
-    call s:ExecuteSilent('wincmd W')
+    call s:DoWincmd('W')
   endwhile
 
   if a:restore
@@ -1887,12 +1910,12 @@ endfunction
 "
 
 function! s:HandleEnter(shifted)
-  if s:IsBufInfo()
+  if s:IsBufType_Info()
     return s:EnterChanServ(a:shifted)
   elseif !a:shifted
-    if s:IsBufCommand()
+    if s:IsBufType_Command()
       return s:SendLines()
-    elseif s:IsBufNicks()
+    elseif s:IsBufType_Nicks()
       return s:SelectNickAction()
     endif
   endif
@@ -1934,14 +1957,14 @@ function! s:HandleKey(key)
       " Pause for commands which produce outputs
       return s:PromptEnter()
     endif
-  elseif char =~# '^[ORo]$' && s:IsBufList()
+  elseif char =~# '^[ORo]$' && s:IsBufType_List()
     if char ==# 'R'
       call s:UpdateList()
     else
       call s:Sort{char ==# 'o' ? 'Select' : 'Reverse'}()
     endif
   elseif char =~# '^[AIOaio]$'
-    if s:IsBufCommand() && char =~# '^[AIa]$'
+    if s:IsBufType_Command() && char =~# '^[AIa]$'
       " Position cursor at an appropriate place
       if char ==# 'I'
 	call s:DoNormal('^')
@@ -2014,7 +2037,7 @@ endfunction
 
 function! s:SendLines() range
   " TODO: Do confirmation before sending (preferably optionally)
-  if !s:IsBufCommand()
+  if !s:IsBufType_Command()
     return
   endif
 
@@ -2086,7 +2109,7 @@ function! s:SendLine(line)
 endfunction
 
 function! s:SelectNickAction() range
-  if !s:IsBufNicks()
+  if !s:IsBufType_Nicks()
     return
   endif
 
@@ -2485,12 +2508,12 @@ endfunction
 " Help
 "
 
-function! s:Cmd_HELP(...)
-  if a:0 && strlen(a:1)
-    if a:1 ==? 'DCC'
+function! s:Cmd_HELP(args)
+  if strlen(a:args)
+    if a:args ==? 'DCC'
       call s:Cmd_DCCHELP()
-    elseif a:1 =~? '^\%(SERVER\|REMOTE\)\>'
-      call s:Cmd_REMOTEHELP(s:StrDivide(a:1, 0))
+    elseif a:args =~? '^\%(SERVER\|REMOTE\)\>'
+      call s:Cmd_REMOTEHELP(s:StrDivide(a:args, 0))
     endif
     return
   endif
@@ -2628,22 +2651,19 @@ function! s:EnterChanServ(split)
     let server = s:StrMatch(line, rx, '\2')
 
     let save_server = s:server
-    let s:server = strlen(server) ? server
-	  \			  : substitute(channel, '^list@', '', '')
+    let s:server = strlen(server) ? server : channel
 
     if s:singlewin
       call s:CanOpenChanServ()
       if a:split
-	split
+	call s:SplitBuf_Channel(channel)
       endif
     endif
 
     if !strlen(server)
-      if channel =~# '^list@'
-	call s:OpenBuf_List()
-      else
-	call s:OpenBuf_Server()
-      endif
+      call s:OpenBuf_Server()
+    elseif channel ==# '*list'
+      call s:OpenBuf_List()
     elseif s:IsChannel(channel)
       call s:OpenBuf_Channel(channel)
     else
@@ -2651,12 +2671,12 @@ function! s:EnterChanServ(split)
     endif
 
     let s:server = save_server
-    call s:MainLoop()
   endif
+  call s:MainLoop()
 endfunction
 
 function! s:UpdateList()
-  if s:IsBufList()
+  if s:IsBufType_List()
     " Prevent excessive updating
     if (localtime() - b:updated) > 60
       call s:ModifyBuf(1)
@@ -2693,7 +2713,7 @@ endfunction
 
 function! s:ExtractChannel()
   let channel = expand('<cWORD>')
-  return (s:IsBufList() && s:IsChannel(channel)) ? channel : ''
+  return (s:IsBufType_List() && s:IsChannel(channel)) ? channel : ''
 endfunction
 
 function! s:ExtractURL(str)
@@ -2832,7 +2852,7 @@ endfunction
 
 function! s:NotifyOffline()
   call s:HiliteClear()
-  echo s:IsSockOpen() ? s:IsBufCommand()
+  echo s:IsSockOpen() ? s:IsBufType_Command()
 	\		? 'Hitting <CR> will send out the current line'
 	\		: 'Hit <Space> to get online'
 	\	      : 'Do /SERVER to get connected'
@@ -2851,8 +2871,8 @@ endfunction
 
 function! s:SetTitleBar()
   let &titlestring = s:client." [".strftime('%H:%M').']: '.
-		    \(s:IsBufIRC()
-		    \ ? b:server.' '.(s:IsBufChannel()
+		    \(s:IsBufType_IRC()
+		    \ ? b:server.' '.(s:IsBufType_Channel()
 		    \		      ? b:channel.': '.b:topic : '')
 		    \ : fnamemodify(expand('%'), ':p'))
   " NOTE: Redrawing is necessary to update the title
@@ -3011,6 +3031,11 @@ function! s:DoNormal(comd, ...)
   endtry
 endfunction
 
+function! s:DoWincmd(comd, ...)
+  let pref = a:0 ? a:1 : ''
+  call s:ExecuteSilent(pref.'wincmd '.a:comd)
+endfunction
+
 function! s:GetEnv(var)
   let var = expand(a:var)
   if var ==# a:var
@@ -3049,12 +3074,12 @@ endfunction
 " Show user that she is in pending-mode
 if 1
 function! s:ShowCmd(comd)
+  " Right-aligning the message
   echon s:StrMultiply(' ', (&columns - 20))
 	\ strpart(a:comd, (strlen(a:comd) > 8 ? strlen(a:comd) - 8 : 0)) "\r"
 endfunction
 else
 function! s:ShowCmd(comd)
-  " TODO: Right-align the message
   echon "\t" a:comd "\r"
 endfunction
 endif
@@ -3128,6 +3153,7 @@ function! s:GetKey(cursor)
   if a:cursor
     call s:UntoggleCursor(1)
   endif
+
   try
     let key = getchar()
   catch /^Vim:Interrupt$/
@@ -3154,6 +3180,7 @@ function! s:PromptKey(timeout, mesg, ...)
   let key = 0
   let hlname = a:0 ? a:1 : 'MoreMsg'
 
+  call s:ClearCommand(0)
   if a:timeout > 0
     let key = s:PromptKeyTick(a:timeout, a:mesg, hlname)
   else
@@ -3168,7 +3195,6 @@ endfunction
 " PromptKey with timeout feature
 function! s:PromptKeyTick(timeout, mesg, hlname)
   let key = 0
-  call s:ClearCommand(0)
   try
     let startT = localtime()
     while (a:timeout - (s:DoTick(a:mesg, '\|/-', a:hlname) - startT)) > 0
@@ -3350,6 +3376,14 @@ endfunction
 
 " Buffer functions
 
+function! s:ExistsBufVar(bufnum, bufvar)
+  return strlen(getbufvar(a:bufnum, a:bufvar))
+endfunction
+
+function! s:IsBufCurrent(bufnum)
+  return (bufnr('%') == a:bufnum)
+endfunction
+
 function! s:IsBufEmpty()
   return !(line('$') > 1 || strlen(getline(1)))
 endfunction
@@ -3389,13 +3423,14 @@ endfunction
 
 function! s:BufUnload(bufname)
   " If it is loaded in another buffer, unload it
-  if bufloaded(a:bufname) && bufnr(a:bufname) != bufnr('%')
+  if bufloaded(a:bufname) && !s:IsBufCurrent(bufnr(a:bufname))
     call s:ExecuteSilent('bunload! '.a:bufname)
   endif
 endfunction
 
 function! s:BufVisit(bufnum)
-  return s:WinVisit(bufwinnr(a:bufnum))
+  return (a:bufnum >= 0 && (  s:IsBufCurrent(a:bufnum)
+	\		   || s:WinVisit(bufwinnr(a:bufnum))))
 endfunction
 
 " Window functions
@@ -3418,7 +3453,7 @@ endfunction
 
 function! s:WinVisit(winnum)
   if a:winnum >= 0 && a:winnum != winnr()
-    call s:ExecuteSilent(a:winnum.'wincmd w')
+    call s:DoWincmd('w', a:winnum)
   endif
   return (a:winnum == winnr())
 endfunction
@@ -3520,7 +3555,7 @@ function! s:UntoggleCursor(show)
 endfunction
 
 function! s:HiliteBuffer()
-  call s:HiliteColumn(s:IsBufInfo() ? 'DiffText' : s:hl_cursor)
+  call s:HiliteColumn(s:IsBufType_Info() ? 'DiffText' : s:hl_cursor)
 endfunction
 
 function! s:HiliteColumn(...)
@@ -3593,7 +3628,7 @@ EOP
 endfunction
 
 function! s:SortSelect()
-  if !s:IsBufList() || s:GetVimVar('b:updating')
+  if !s:IsBufType_List() || s:GetVimVar('b:updating')
     return
   endif
 
@@ -3618,7 +3653,7 @@ function! s:SortSelect()
 endfunction
 
 function! s:SortReverse()
-  if !s:IsBufList() || s:GetVimVar('b:updating')
+  if !s:IsBufType_List() || s:GetVimVar('b:updating')
     return
   endif
 
@@ -3853,7 +3888,11 @@ function! s:WalkThruChanServ(forward)
 	  $next = $chanserv[1];
 	}
 
-      unless (vim_bufvisit($next))
+      if (vim_bufvisit($next))
+	{
+	  VIM::DoCommand("call s:SetCurChanServ($next)");
+	}
+      else
 	{
 	  VIM::DoCommand("silent buffer $next");
 	}
@@ -4990,7 +5029,7 @@ sub update_info
 	  if ($sref->{'list'} >= 0)
 	    {
 	      $curbuf->Append($curbuf->Count(),
-			      sprintf(" %s[%d]list@%s",
+			      sprintf(" %s[%d]*list\t\t\t%s",
 				      $dead
 				      ? '-'
 				      : ($sref->{'list'} == $Current_ChanServ)
