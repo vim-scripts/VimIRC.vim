@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 February 2004
-" Last Change: Mon, 22 Mar 2004 21:24:30 +0900 (JST)
+" Last Change: Tue, 23 Mar 2004 23:57:24 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -72,10 +72,10 @@
 "
 " Usage:
 "   Normal mode:  This is a pseudo normal mode.  Just try several normal-mode
-"		  commands as usual.  Some are available, and some are not.
+"		  commands as usual.
 "
 "		  Type "i" or "I" to enter the `command mode' described
-"		  below, just as you do in vi to go insert mode.
+"		  below, just as you do in vim to go insert mode.
 "
 "		  Type <Ctrl-C> to get out of control and freely move around
 "		  or do ex commands.
@@ -125,9 +125,11 @@
 "   * netsplit detection
 "   * SSL
 "   * IPv6
+"   * command-line completion (with tab key)
 "   * scripting (?)
 "   * ctcp, including dcc stuffs (mostly done)
 "   * help
+"   * menus
 "   * etc. etc.
 "
 "   Done:
@@ -142,7 +144,7 @@ endif
 let s:save_cpoptions = &cpoptions
 set cpoptions&
 
-let s:version = '0.6.1'
+let s:version = '0.6.2'
 let s:client = 'VimIRC '.s:version
 " Set this to zero when releasing, which I'll occasionally forget, for sure
 let s:debug = 0
@@ -372,13 +374,13 @@ function! s:UndoAutocmds()
 endfunction
 
 function! s:MainLoop()
-  if !(exists('s:opened') && s:opened && s:IsSockOpen())
+  " NOTE: Take care of the recursion, it may cause some obscure troubles
+  if !(s:GetVimVar('s:opened') && s:IsSockOpen())
     return
   endif
 
   " Clearing the vim command line
   echo ""
-  " TODO: What if already inside the loop?
   while 1
     try
       let key = getchar(0)
@@ -392,14 +394,10 @@ function! s:MainLoop()
     catch /^IMGONNA/
       " Get out of the loop
       " NOTE: You cannot see new messages posted while posting
-      if v:exception =~# 'POST$' && mode() !=# 'i'
-	" FIXME: Sometimes "startinsert" in OpenBuf_Command doesn't seem to work
-	startinsert
-      endif
       break
     catch /^Vim:Interrupt$/
       match none
-      if s:IsBufCommand()
+      if 0 && s:IsBufCommand()
 	startinsert!
       endif
       break
@@ -674,7 +672,6 @@ function! s:OpenBuf_Command()
     call append('$', '')
   endif
   $
-  " FIXME: Sometimes entering insert mode fails
   startinsert
 endfunction
 
@@ -727,13 +724,11 @@ function! s:DoHilite()
 endfunction
 
 function! s:DoHilite_Server()
-  if !s:singlewin
-    call s:DoHilite()
-  else
-    call s:DoHilite_Channel()
-  endif
+  call s:DoHilite_Channel()
+  syntax match VimIRCWallop display "!\S\+!" contained containedin=VimIRCUserHead
   syntax region VimIRCUnderline matchgroup=VimIRCIgnore start="" end=""
 
+  highlight link VimIRCWallop	    WarningMsg
   highlight link VimIRCUnderline    Underlined
   highlight link VimIRCIgnore	    Ignore
 endfunction
@@ -823,8 +818,8 @@ function! s:InitBuf_Command(bufname, channel)
   let b:server	= s:server
   let b:channel = a:channel
   call s:DoSettings()
-  nnoremap <buffer> <silent> <CR> :call <SID>SendingCommand()<CR>
-  inoremap <buffer> <silent> <CR> <Esc>:call <SID>SendingCommand()<CR>
+  nnoremap <buffer> <silent> <CR> :call <SID>SendingCommand(0)<CR>
+  inoremap <buffer> <silent> <CR> <Esc>:call <SID>SendingCommand(0)<CR>
   nunmap <buffer> i
   nunmap <buffer> I
   " TODO: Forbid gq stuffs
@@ -835,8 +830,8 @@ function! s:InitBuf_Chat(bufname, nick, server)
   " NOTE: a:server is the name of the IRC server, not the peer's
   let b:server	= a:server
   let b:channel = '='.a:nick
-  let b:title	= '  Chatting with '.a:nick
-  call setline(1, s:GetTime(1).' *: Now chatting with '.a:nick)
+  let b:title	= '  Chatting with '.b:channel
+  call setline(1, s:GetTime(1).' *: Now chatting with '.b:channel)
   call s:DoSettings()
   call s:DoHilite_Chat()
   call s:SetBufNum(a:bufname, bufnr('%'))
@@ -852,7 +847,7 @@ function! s:CloseServer()
   call s:CloseList()
 
   let v:errmsg = ''
-  while s:VisitServer() >= 0
+  while s:VisitServer()
     silent! close
     if strlen(v:errmsg)
       break
@@ -977,11 +972,10 @@ endfunction
 function! s:HandleKey(key)
   let char   = nr2char(a:key)
   let oldwin = winnr()
-  let search = (char =~# '[/?Nn]')
+  "let column = (char =~# '[#*/?BNWbhlnw]')
 
   match none
   " TODO: Make some mappings user-configurable
-  " TODO: Characterwise motions?
   if char =~# '[:]'
     " TODO: How can we enter ex command mode from script?  Requires a new vim
     "	    command (startex or something)?
@@ -992,7 +986,6 @@ function! s:HandleKey(key)
       if strlen(comd)
 	execute comd
       endif
-      echo ""
     endif
   elseif char =~# '[iI]'
     call s:OpenBuf_Command()
@@ -1001,10 +994,9 @@ function! s:HandleKey(key)
     call s:SearchWord(char)
   elseif char == "\<CR>"
     if s:IsBufCommand()
-      call s:SendingCommand()
+      call s:SendingCommand(1)
     elseif s:IsBufList()
       call s:JoinChannel()
-      echo ""
     elseif s:IsBufNames()
       call s:SelectNickCmd(1)
     else
@@ -1014,15 +1006,18 @@ function! s:HandleKey(key)
     if s:IsBufList()
       call s:Sort{char ==# 'o' ? 'Select' : 'Reverse'}()
     endif
-  elseif char =~# '[bp]'	" scroll backward
+  elseif char =~# '[p]'	" scroll backward
     execute 'normal!' nr2char(2)
   elseif char =~# '[ ]'		" scroll forward
     execute 'normal!' nr2char(6)
+  elseif char == "\t"
+    execute 'normal!' "1\<C-I>"
   elseif char == "\<C-B>" || char == "\<C-F>"
 	\ || char == "\<C-D>" || char == "\<C-U>"
 	\ || char == "\<C-E>" || char == "\<C-Y>"
 	\ || char == "\<C-L>" || char == "\<C-P>"
-	\ || char =~# '[$+-0GHLMNjkn^]'
+	\ || char == "\<C-O>"
+	\ || char =~# '[-#$*+0BGHLMNW^bhjklnw]'
     " One char commands
     silent! execute 'normal!' char
   elseif char =~# '[`gmz]'
@@ -1047,11 +1042,16 @@ function! s:HandleKey(key)
   if winnr() != oldwin
     call s:UpdateTitleBar()
   endif
-  call s:Hilite{search ? 'Column' : 'Line'}('.')
-  redraw
+  if 0
+    " FIXME: Doppelgaenger issue with s:HiliteColumn()
+    call s:Hilite{column ? 'Column' : 'Line'}('.')
+  else
+    call s:HiliteColumn('.')
+  endif
+  echon "\r"|redraw
 endfunction
 
-function! s:SendingCommand()
+function! s:SendingCommand(loop)
   " TODO: Do confirmation (preferably optionally)
   if !s:IsBufCommand()
     return
@@ -1154,9 +1154,12 @@ function! s:SendingCommand()
   unlet! s:channel
   if comd !=# 'AWAY'  " don't scroll down when awaying, to keep the context
     call s:ExecuteSafe('keepjumps', 'normal! Gzb')
+    redraw
   endif
-  redraw
-  call s:MainLoop()
+
+  if !a:loop
+    call s:MainLoop()
+  endif
 endfunction
 
 function! s:JoinChannel()
@@ -1206,6 +1209,7 @@ function! s:SelectNickCmd(loop) range
 
   if nnick > 1 && !(choice % 2)
     echo "Sorry, you cannot do it with mulitple persons at the same time"
+    return
   endif
 
   if choice == 1
@@ -1317,7 +1321,7 @@ function! s:PrintHelp()
     echo "\trole."
     echo "\n"
     echo "/dcc help"
-    echo "\tShow help message of DCC commands"
+    echo "\tShow a help message for DCC commands"
     echo "\n"
     echohl MoreMsg
     echo "Hit any key to continue"
@@ -1491,7 +1495,11 @@ function! s:ExecuteSafe(prefix, comd)
 endfunction
 
 function! s:HiliteColumn(bogus, ...)
-  execute 'match' (a:0 ? a:1 : 'Cursor') '/\%#\k*/'
+  if 1
+    execute 'match' (a:0 ? a:1 : 'Cursor') '/\%#\S*/'
+  else
+    execute 'match' (a:0 ? a:1 : 'Cursor') '/\%#/'
+  endif
 endfunction
 
 function! s:HiliteLine(lnum, ...)
@@ -1539,7 +1547,7 @@ endfunction
 
 function! s:GetConf_YN(msg)
   echohl Question
-  echon ' '.a:msg.' (y/[n]): '
+  echo ' '.a:msg.' (y/[n]): '
   echohl None
   return (nr2char(getchar()) ==? 'y')
 endfunction
@@ -1942,7 +1950,7 @@ function! s:Send_QUIT(comd, args)
   let mesg = strlen(a:args) ? a:args : s:partmsg
   let bufnum = s:GetBufNum_Server()
   if bufnum >= 0
-    " Mark this buffer as dead so that the next /SERVER invocation will close it
+    " Mark this buffer as dead so that the next /SERVER invocation can close it
     call setbufvar(bufnum, 'dead', 1)
   endif
 
@@ -2028,8 +2036,7 @@ endfunction
 function! s:SetCurrentServer(server)
   perl <<EOP
 {
-  my $server = find_server(scalar(VIM::Eval('a:server')));
-  if ($server)
+  if (my $server = find_server(scalar(VIM::Eval('a:server'))))
     {
       set_curserver(fileno($server->{'sock'}));
     }
@@ -2104,14 +2111,16 @@ function! s:Server(server)
 
   "
   " Close the currently open server window (only if it is marked disconnected)
-  let close = s:IsBufIRC() && exists('b:dead') && b:server !=# server
-	\     ? bufnr('%') : 0
+  let close = (s:IsBufIRC() && exists('b:dead') && b:server !=# server)
+	\	? bufnr('%') : 0
   call s:OpenBuf_Server()
-  let b:port = port
+  if port != 6667
+    let b:port = port
+  endif
 
   call s:PreBufModify()
   call {s:IsBufEmpty() ? 'setline' : 'append'}('$', s:GetTime(1).
-	\' * Connecting with '.server.'...')
+	\' *: Connecting with '.server.'...')
   call s:PostBufModify()
   $
 
@@ -2480,7 +2489,7 @@ sub is_me
 # CTCP
 #
 
-# Heavily based on ircii and x-chat, regarding the DCC part
+# Heavily based on ircii and x-chat, regarding the DCC part.
 
 our @DCC_TYPES = qw(. GET SEND CHAT CHAT);
 
@@ -2651,35 +2660,33 @@ sub process_dcc_query
 	    {
 	      return;
 	    }
-	  else
+
+	  $dcc = add_dccclient();
+	  if ($dcc)
 	    {
-	      $dcc = add_dccclient();
-	      if ($dcc)
+	      my $dccdir = vim_getvar('s:dccdir');
+	      my ($fname)= ($desc =~ m#^(?:.*/)?(.+)$#);
+
+	      $dcc->{'nick'}  = $from;
+	      $dcc->{'server'}= $server;
+	      $dcc->{'port'}  = $port;
+	      $dcc->{'flags'} = $DCC_FILERECV;
+	      $dcc->{'desc'}  = $desc;
+	      $dcc->{'fname'} = sprintf("%s/%s", $dccdir, do_urldecode($fname));
+	      $dcc->{'fsize'} = $size;
+
+	      # FIXME: Currently turning off the RESUME: append seems to
+	      # corrupt data
+	      if (0 && -e $dcc->{'fname'})
 		{
-		  my $dccdir = vim_getvar('s:dccdir');
-		  my ($fname)= ($desc =~ m#^(?:.*/)?(.+)$#);
-
-		  $dcc->{'nick'}  = $from;
-		  $dcc->{'server'}= $server;
-		  $dcc->{'port'}  = $port;
-		  $dcc->{'flags'} = $DCC_FILERECV;
-		  $dcc->{'desc'}  = $desc;
-		  $dcc->{'fname'} = sprintf("%s/%s", $dccdir,
-							do_urldecode($fname));
-		  $dcc->{'fsize'} = $size;
-
-		  if (-e $dcc->{'fname'})
+		  if ((my $fsize = (-s $dcc->{'fname'})) < $size)
 		    {
-		      # FIXME: Append seems to corrupt data
-		      if (0 && (my $fsize = (-s $dcc->{'fname'})) < $size)
-			{
-			  # Need confirmation?
-			  $dcc->{'flags'} |= ($DCC_RESUME | $DCC_QUEUED);
-			  $dcc->{'bytesread'} = $fsize;
-			  ctcp_send(1, $dcc->{'nick'}, "DCC RESUME %s %d %d",
-							$desc, $port, $fsize);
-			  return;
-			}
+		      # Need confirmation?
+		      $dcc->{'flags'} |= ($DCC_RESUME | $DCC_QUEUED);
+		      $dcc->{'bytesread'} = $fsize;
+		      ctcp_send(1, $dcc->{'nick'}, "DCC RESUME %s %d %d",
+						    $desc, $port, $fsize);
+		      return;
 		    }
 		}
 	    }
@@ -2727,13 +2734,14 @@ sub dcc_ask_accept_offer
 
 sub dcc_show_list
 {
-  irc_add_line('', "*: Listing DCC sessions");
+  irc_add_line('', "*: Listing DCC sessions...");
 
   foreach my $server (@Servers)
     {
-      if (exists($Clients{$server->{'server'}}))
+      if (exists($Clients{$server->{'server'}})
+	  && @{$Clients{$server->{'server'}}})
 	{
-	  irc_add_line('', "DCC(LIST): Via %s:", $server->{'server'});
+	  irc_add_line('', "DCC(LIST): * Via %s:", $server->{'server'});
 	  foreach my $dcc (@{$Clients{$server->{'server'}}})
 	    {
 	      irc_add_line('', "DCC(LIST): %-5s %-10.10s (%s) %7u/%-7u %s",
@@ -2752,7 +2760,7 @@ sub dcc_show_list
 	    }
 	}
     }
-  irc_add_line('', "*: End of DCC list");
+  irc_add_line('', "End of /DCC LIST");
 }
 
 sub dcc_was_rejected
@@ -2947,7 +2955,7 @@ sub dcc_init_listen
   unless ($dcc->{'sock'})
     {
       del_dccclient($dcc);
-      irc_add_line('', "DCC(%s): Opening socket failed: %s",
+      irc_add_line('', "DCC(%s): Failed in opening socket: %s",
 			$DCC_TYPES[$dcc->{'flags'} & $DCC_TYPE], $!);
       return;
     }
@@ -3545,12 +3553,14 @@ sub add_nick
 sub del_nick
 {
   my ($nick, $chan) = @_;
-  my $nref = get_nicks($chan);
 
-  if (exists($nref->{$nick}))
+  if (my $nref = get_nicks($chan))
     {
-      delete($nref->{$nick});
-      return 1;
+      if (exists($nref->{$nick}))
+	{
+	  delete($nref->{$nick});
+	  return 1;
+	}
     }
   return 0;
 }
@@ -3558,15 +3568,18 @@ sub del_nick
 sub rename_nick
 {
   my ($old, $new, $chan) = @_;
-  my $nref = get_nicks($chan);
 
-  if (exists($nref->{$old}))
+  if (my $nref = get_nicks($chan))
     {
-      my $mode = $nref->{$old};
-      del_nick($old, $chan);
-      add_nick($new, $mode, $chan);
+      if (exists($nref->{$old}))
+	{
+	  my $mode = $nref->{$old};
+	  del_nick($old, $chan);
+	  add_nick($new, $mode, $chan);
+	  return 1;
+	}
     }
-  return exists($nref->{$new});
+  return 0;
 }
 
 sub list_nicks
