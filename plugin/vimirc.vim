@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 Feb 2004
-" Last Change: Sun, 27 Feb 2005 02:52:56 +0900 (JST)
+" Last Change: Mon, 28 Feb 2005 15:33:14 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -171,7 +171,7 @@
 "   Normal mode:  This is a pseudo normal mode.  Try your favorite Vim normal
 "		  mode commands as usual.
 "
-"		  Typing "i" or "I" will let you in the `command mode'
+"		  Hitting "i" or "I" will let you in the `command mode'
 "		  described below, just as you do in Vim to go insert mode.
 "
 "		  ":", "/" and "?" keys will prompt you to enter ex-commands
@@ -180,6 +180,9 @@
 "		  Hit <Ctrl-C> to get out of control and freely move around
 "		  or do ex commands.  Hit <Space> to re-enter the normal
 "		  (online) mode again.
+"
+"		  Hitting "q" or "Q" will quit the current channel, chat, or
+"		  VimIRC itself, depending on the context.
 "
 "		  Special cases:
 "
@@ -218,7 +221,7 @@
 "     /quit<CR>
 "   in the IRC command line to disconnect with the current server.
 "
-"   Or to totally exit from the script, type
+"   To totally exit from VimIRC, press "Q" in normal mode, or type
 "     VimIRCQuit<CR>
 "   on the VIM command line.
 "
@@ -285,7 +288,7 @@
 if exists('g:loaded_vimirc') || &compatible
   finish
 endif
-let s:version = '0.9.5'
+let s:version = '0.9.6'
 
 let s:debug = (s:version =~# '-devel$')
 if !s:debug
@@ -301,6 +304,7 @@ set cpoptions&
 
 if 0
 
+" Suppress beeps (automatically when it gets too noisy)
 function! s:ToggleQuietMode()
   let s:quiet = !s:quiet
 endfunction
@@ -642,6 +646,24 @@ function! s:QuitVimIRC()
   endtry
 endfunction
 
+function! s:QuitWhat(severe)
+  if a:severe || !exists('b:channel')
+    if s:GetConf_YN('Really quit VimIRC?')
+      call s:QuitVimIRC()
+    endif
+  else
+    if s:IsNick(b:channel)
+      if s:GetConf_YN('Really quit chatting?')
+	call s:QuitChat(b:channel)
+      endif
+    else
+      if s:GetConf_YN('Really close channel '.b:channel.'?')
+	call s:Send_PART('PART', b:channel)
+      endif
+    endif
+  endif
+endfunction
+
 function! s:MainLoop()
   " NOTE: Be careful of the recursion, it may cause some obscure troubles
   if !(!s:inside_loop && s:opened && s:IsSockOpen())
@@ -722,7 +744,7 @@ endfunction
 function! s:RC_Unset(type, name)
   let varname = s:RC_Varname(a:type, a:name)
   while search('\m'.s:EscapeMagic(varname).'\s*=', 'w')
-    call s:LineDel()
+    call s:DelLine()
   endwhile
   unlet! g:{varname}
 endfunction
@@ -790,9 +812,9 @@ function! s:InitBufNames()
   let s:bufname = '_VimIRC_'
   let list = 'info server list channel nicks command chat'
   while strlen(list)
-    let type = matchstr(list, '^\S\+')
+    let type = s:StrDivide(list, 1)
     let s:bufname_{type} = s:bufname.toupper(type).'_'
-    let list = substitute(list, '^\S\+\s*', '', '')
+    let list = s:StrDivide(list, 0)
   endwhile
 endfunction
 
@@ -989,7 +1011,7 @@ function! s:OpenBuf(comd, ...)
     " Avoid "not enough room" error
     set winminheight=0 winminwidth=0
 
-    silent! execute a:comd.(a:0 && strlen(a:1) ? ' '.a:1 : '')
+    call s:ExecuteSilent(a:comd.(a:0 && strlen(a:1) ? ' '.a:1 : ''))
     setlocal noswapfile modifiable
     call s:RestoreWinLine(bufnum, winline)
   catch
@@ -1290,6 +1312,8 @@ function! s:DoSettings()
   nnoremap <buffer> <silent> O	      :call <SID>OpenBuf_Command()<CR>
   nnoremap <buffer> <silent> p	      :call <SID>Beep(1)<CR>
   nnoremap <buffer> <silent> P	      :call <SID>Beep(1)<CR>
+  nnoremap <buffer> <silent> q	      :call <SID>QuitWhat(0)<CR>
+  nnoremap <buffer> <silent> Q	      :call <SID>QuitWhat(1)<CR>
   nnoremap <buffer> <silent> <C-L>    :call <SID>ResizeWin(1)<CR>
   nnoremap <buffer> <silent> <C-N>    :call <SID>WalkThruChanServ(1)<CR>
   nnoremap <buffer> <silent> <C-P>    :call <SID>WalkThruChanServ(0)<CR>
@@ -1671,22 +1695,18 @@ function! s:NeatenBuf_Command(purge)
 
   if a:purge
     " We move the input line to the bottom
-    let line = s:LineDel()
+    let line = s:DelLine()
     if strlen(line)
       " Remove duplicates, if any
-      while s:LineSearch(line)
-	call s:LineDel()
+      while s:SearchLine(line)
+	call s:DelLine()
       endwhile
       call {strlen(getline('$')) ? 'append' : 'setline'}('$', line)
     endif
   endif
 
   call s:BufTrim()
-  if strlen(getline('$'))
-    call append('$', '')
-  endif
-
-  call s:ScreenBottom()
+  call s:OpenNewLine()
   call s:ModifyBuf(0)
 endfunction
 
@@ -1826,7 +1846,44 @@ function! s:HandleKey(key)
   call s:HiliteClear()
 
   " TODO: Make some mappings user-configurable
-  if char =~# '[:]'
+  " Place movement commands earlier, to get quick response
+  if char =~# '[ p]'	" scroll forward/backward
+    call s:DoNormal(nr2char(2 * (char == ' ' ? 3 : 1)))
+  elseif char == "\<C-N>" || char == "\<C-P>"
+    call s:WalkThruChanServ(char == "\<C-N>")
+  elseif char == "\<C-B>" || char == "\<C-F>"
+	\ || char == "\<C-D>" || char == "\<C-U>"
+	\ || char == "\<C-E>" || char == "\<C-Y>"
+	\ || char == "\<C-O>" || char == "\<C-^>"
+	\ || char =~# '[-#$*+0;BEGHLMNW^behjklnw]'
+    " One char commands
+    call s:DoNormal(char)
+  elseif char == "\t"
+    call s:DoNormal("1\<C-I>")
+  elseif char =~# '[`FTfgmtz]'
+    " Commands which take a second char
+    call s:DoNormal(char.nr2char(getchar()))
+  elseif (char + 0) || char == "\<C-W>"
+    " Accept things like "15G", "<C-W>2k"
+    let comd = char
+    while 1
+      let key  = getchar()
+      let comd = comd.nr2char(key)
+      " Continue if it is a number
+      if !(key >= 48 && key <= 57)
+	break
+      endif
+    endwhile
+    if comd == "\<C-W>\<CR>"
+      if s:IsBufInfo()
+	call s:EnterChanServ(1)
+      endif
+    else
+      call s:DoNormal(comd)
+    endif
+  elseif char == "\<C-L>"
+    call s:ResizeWin(1)
+  elseif char =~# '[:]'
     if s:Execute(input(':'))
       " Pause for commands which produce outputs
       return s:HandlePromptKey('Hit any key to continue')
@@ -1841,13 +1898,10 @@ function! s:HandleKey(key)
     if s:IsBufCommand()
       " Position cursor at an appropriate place
       if char ==# 'I'
-	normal! ^
-      elseif char =~# '[Oio]'
+	call s:DoNormal('^')
+      elseif char =~? '[io]'
 	" I think most users expect "i" to open a new input line
-	$
-	if strlen(getline('.'))
-	  normal! o
-	endif
+	call s:OpenNewLine()
       endif
       execute 'startinsert'.(char ==? 'a' ? '!' : '')
     else
@@ -1866,44 +1920,8 @@ function! s:HandleKey(key)
     else
       call s:StartWeb()
     endif
-  elseif char =~# '[p]'		" scroll backward
-    execute 'normal!' nr2char(2)
-  elseif char =~# '[ ]'		" scroll forward
-    execute 'normal!' nr2char(6)
-  elseif char == "\t"
-    execute 'normal!' "1\<C-I>"
-  elseif char == "\<C-N>" || char == "\<C-P>"
-    call s:WalkThruChanServ(char == "\<C-N>")
-  elseif char == "\<C-L>"
-    call s:ResizeWin(1)
-  elseif char == "\<C-B>" || char == "\<C-F>"
-	\ || char == "\<C-D>" || char == "\<C-U>"
-	\ || char == "\<C-E>" || char == "\<C-Y>"
-	\ || char == "\<C-O>" || char == "\<C-^>"
-	\ || char =~# '[-#$*+0;BEGHLMNW^behjklnw]'
-    " One char commands
-    silent! execute 'normal!' char
-  elseif char =~# '[`FTfgmtz]'
-    " Commands which take a second char
-    execute 'normal!' char.nr2char(getchar())
-  elseif (char + 0) || char == "\<C-W>"
-    " Accept things like "15G", "<C-W>2k"
-    let comd = char
-    while 1
-      let key  = getchar()
-      let comd = comd.nr2char(key)
-      " Continue if it is a number
-      if !(key >= 48 && key <= 57)
-	break
-      endif
-    endwhile
-    if comd == "\<C-W>\<CR>"
-      if s:IsBufInfo()
-	call s:EnterChanServ(1)
-      endif
-    else
-      silent! execute 'normal!' comd
-    endif
+  elseif char =~? '[q]'
+    call s:QuitWhat(char ==# 'Q')
   endif
 
   " Speed up jjjjjjjjjjjjj like inputs
@@ -1911,7 +1929,6 @@ function! s:HandleKey(key)
     return s:HandleKey(a:key)
   endif
   " Discard excessive keytypes (Chalice)
-  " XXX: Does it cause any problem to uncomment this?
   while getchar(0)|endwhile
 
   call s:SetLastActive()
@@ -1922,7 +1939,9 @@ endfunction
 " Make use of the key input for the 'Hit any key to continue' prompt
 function! s:HandlePromptKey(mesg, ...)
   let key = s:PromptKey(a:mesg, (a:0 ? a:1 : 'MoreMsg'))
-  if key != char2nr(' ')  " Do nothing with space
+  if key == char2nr(' ')  " Do nothing with space
+    call s:HiliteLine('.')
+  else
     call s:HandleKey(key)
   endif
 endfunction
@@ -2103,9 +2122,9 @@ function! s:OptList(opts)
   let opts = a:opts
   call s:EchoHL('Current setting'.(opts =~ ' ' ? 's' : '').':', 'Title')
   while strlen(opts)
-    let opt = matchstr(opts, '^\S\+')
+    let opt = s:StrDivide(opts, 1)
     echo opt.':' s:GetVimVar('s:'.opt)
-    let opts = substitute(opts, '^\S\+\s*', '', '')
+    let opts = s:StrDivide(opts, 0)
   endwhile
   call s:HandlePromptKey('Hit any key to continue')
 endfunction
@@ -2189,13 +2208,14 @@ endfunction
 "
 
 function! s:SetOpVoice(onoff, mode, args)
-  let nicks = a:args
-  let channel = s:channel
-  if s:IsChannel(matchstr(a:args, '^\S\+'))
-    let nicks = substitute(a:args, '^\S\+\s\+', '', '')
-    let channel = matchstr(a:args, '^\S\+')
+  let channel = s:StrDivide(a:args, 1)
+  let nicks   = s:StrDivide(a:args, 0)
+  if !s:IsChannel(channel)
+    let channel = s:channel
+    let nicks	= a:args
   endif
-  if !strlen(nicks)
+
+  if !(s:IsChannel(channel) && strlen(nicks))
     return s:HandlePromptKey('Syntax: /op [channel] nick(s)', 'Error')
   endif
 
@@ -2313,7 +2333,9 @@ function! s:ExpandArgs(comd, args)
     " Syntax: USER [COUNT [SERVER]]
     " NOTE: Some servers accept multiple users, delimited with commas, whereas
     " RFC1459 specifies only one user.  I adopt the latter.
-    let args = s:ExpandChannel(a:args, ' ')
+    if 1 || a:args =~ '^\S\+\%(\s\+-\=\d\+\%(\s\+\S\+\)\=\)\=$'
+      let args = s:ExpandChannel(a:args, ' ')
+    endif
   elseif a:comd =~# '^\%(ISON\|USERHOST\)$'
     " Syntax: USER [<space> USER]*
     " User might delimit targets with commas, which is wrong
@@ -2496,11 +2518,13 @@ endfunction
 "
 
 function! s:StartServer(servers)
-  let servers = s:StrSquash(a:servers)
+  let servers = a:servers
   while strlen(servers)
-    let server = matchstr(servers, '^[^,]\+')
-    call s:Cmd_SERVER(server)
-    let servers = substitute(servers, '^[^,]\+,\=', '', '')
+    let server = s:StrDivide(servers, 1)
+    if strlen(server)
+      call s:Cmd_SERVER(server)
+    endif
+    let servers = s:StrDivide(servers, 0)
   endwhile
 endfunction
 
@@ -2508,7 +2532,6 @@ function! s:StartChannel(channel)
   if s:GetConf_YN('Join channel '.a:channel.'?')
     call s:SetCurServer(b:server)
     call s:Send_JOIN('JOIN', a:channel)
-    call s:MainLoop()
   endif
 endfunction
 
@@ -2595,6 +2618,11 @@ function! s:ExtractChannel()
   return (s:IsBufList() && s:IsChannel(channel)) ? channel : ''
 endfunction
 
+function! s:ExtractURL(str)
+  return s:ValidateURL(matchstr(a:str,
+	\		  '\<\%(\%(ftp\|https\=\)://\|www\%(\d\+\)\=\.\)\S\+'))
+endfunction
+
 function! s:ExtractLink()
   let url = s:ExtractChannel()
   if !strlen(url)
@@ -2608,11 +2636,6 @@ function! s:ExtractLink()
     endif
   endif
   return url
-endfunction
-
-function! s:ExtractURL(str)
-  return s:ValidateURL(matchstr(a:str,
-	\			  '\<\%(\%(ftp\|https\=\)://\|www\.\)\S\+'))
 endfunction
 
 function! s:StartWeb()
@@ -2636,9 +2659,11 @@ function! s:StartWeb()
 	call s:ExecuteShell(comd)
       endif
     else
-      execute "normal! \<CR>"
+      call s:DoNormal("\<CR>")
     endif
   endif
+
+  call s:MainLoop()
 endfunction
 
 "
@@ -2663,7 +2688,7 @@ function! s:LogBuffer(bufnum)
     execute 'redir >>' logfile
     silent echo '(Logged at' s:GetTime(0).")\n"
     redir END
-    silent! execute range.'write! >>' logfile
+    call s:ExecuteShell(range.'write! >> '.logfile)
 
     let b:lastsave = line('$')
     let &cpoptions = save_cpoptions
@@ -2799,11 +2824,11 @@ function! s:Beep(times)
 
     set errorbells
     set novisualbell
-    normal! 0
+    call s:DoNormal('0')
 
     let i = 0
     while i < a:times
-      normal! h
+      call s:DoNormal('h')
       let i = i + 1
       if (a:times - i)  " do not sleep for the last time
 	sleep 250 m
@@ -2825,31 +2850,38 @@ function! s:EchoHL(mesg, hlname)
   endtry
 endfunction
 
-function! s:Execute(comd)
-  let prints = 0
+function! s:Execute(comd, ...)
+  let silent = (a:0 && a:1)
+  let retval = 0
 
   if strlen(a:comd)
-    try
-      let save_more = &more
-      let save_reg = @"
-
-      set more
-      let @" = @_
-
-      redir @"
-      execute a:comd
-      redir END
-      let prints = strlen(@")
-    finally
-      let &more = save_more
-      let @" = save_reg
-    endtry
+    let retval = s:Execute{silent ? 'Silent' : 'Loud'}(a:comd)
   endif
-  return prints
+  return retval
+endfunction
+
+function! s:ExecuteLoud(comd)
+  let loud = 0
+  try
+    let save_more = &more
+    let save_reg = @"
+
+    set more
+    let @" = @_
+
+    redir @"
+    execute a:comd
+    redir END
+    let loud = strlen(@")
+  finally
+    let &more = save_more
+    let @" = save_reg
+  endtry
+  return loud
 endfunction
 
 function! s:ExecuteSafe(prefix, comd)
-  execute (exists(':'.a:prefix) == 2 ? a:prefix.' ' : '').a:comd
+  execute (exists(':'.a:prefix) == 2 ? a:prefix : '') a:comd
 endfunction
 
 function! s:ExecuteShell(comd)
@@ -2858,7 +2890,16 @@ function! s:ExecuteShell(comd)
     " Remove unecessary escapes
     let comd = substitute(comd, '\\"\@=', '', 'g')
   endif
-  silent execute '!'.comd
+  call s:ExecuteSilent('!'.comd)
+endfunction
+
+function! s:ExecuteSilent(comd)
+  silent! execute a:comd
+endfunction
+
+function! s:DoNormal(comd, ...)
+  let silent = (a:0 && a:1)
+  execute (silent ? 'silent!' : '') 'normal!' a:comd
 endfunction
 
 function! s:GetEnv(var)
@@ -2881,7 +2922,7 @@ endfunction
 function! s:Read(file)
   let save_cpoptions = &cpoptions
   set cpoptions-=a
-  silent execute 'read' a:file
+  call s:ExecuteSilent('read '.a:file)
   let &cpoptions = save_cpoptions
 endfunction
 
@@ -2895,7 +2936,7 @@ function! s:Write(file, append)
   set cpoptions-=A
   " Cannot write if it is loaded elsewhere
   call s:BufUnload(a:file)
-  silent! execute 'write!'.(a:append ? ' >>' : '') a:file
+  call s:ExecuteSilent('write! '.(a:append ? '>> ' : '').a:file)
   let &cpoptions = save_cpoptions
 endfunction
 
@@ -2944,7 +2985,7 @@ function! s:SearchWord(comd)
   if strlen(word)
     let @/ = word
   endif
-  silent! execute 'normal!' (a:comd == '/' ? 'n' : 'N')
+  call s:DoNormal((a:comd == '/' ? 'n' : 'N'), 1)
 endfunction
 
 " String manipulation
@@ -2965,7 +3006,7 @@ endfunction
 " Remove unnecessary spaces in a string
 function! s:StrTrim(str, ...)
   let space = (!a:0 || a:1 =~ '^ \=$')
-  let patrn = space ? '\s' : '\%(\V'.a:1.'\m\)'
+  let patrn = space ? '\s' : '\%(\s*\V'.a:1.'\m\s*\)'
 
   return substitute(a:str, '\%(^'.patrn.'\+\|'.patrn.'\+$\)', '', 'g')
 endfunction
@@ -2973,17 +3014,17 @@ endfunction
 " Ditto
 function! s:StrCompress(str, ...)
   let space = (!a:0 || a:1 =~ '^ \=$')
-  let patrn = space ? '\s' : '\%(\V'.a:1.'\m\)'
+  let patrn = space ? '\s' : '\%(\s*\V'.a:1.'\m\s*\)'
   let subst = space ? ' ' : a:1
 
   let str = s:StrTrim(a:str, subst)
-  return substitute(str, patrn.'\{2,\}', subst, 'g')
+  return substitute(str, patrn.'\+', subst, 'g')
 endfunction
 
 " Severer version of the above
 function! s:StrSquash(str, ...)
   let space = (!a:0 || a:1 =~ '^ \=$')
-  let patrn = space ? '\s' : '\%(\V'.a:1.'\m\)'
+  let patrn = space ? '\s' : '\%(\s*\V'.a:1.'\m\s*\)'
 
   return substitute(a:str, patrn.'\+', '', 'g')
 endfunction
@@ -3001,8 +3042,8 @@ endfunction
 " Divide string at space or comma
 function! s:StrDivide(str, former)
   return s:StrMatch(a:str,
-	\	    '^\([^[:space:],]\+\)\%([[:space:],]\+\(.*\)\)\=$',
-	\	    '\'.(1 + (a:former ? 0 : 1)))
+	\	    '^\([^[:space:],]\+\)\=\%([[:space:],]\+\(.*\)\)\=$',
+	\	    '\'.(1 + !a:former))
 endfunction
 
 function! s:EscapeFName(str)
@@ -3035,19 +3076,40 @@ function! s:ValidatePath(path)
 endfunction
 
 function! s:ValidateURL(url)
-  return substitute(a:url, '[(),.:;\[\]]\+$', '', '')
+  let url = a:url
+  if strlen(a:url)
+    " Cut the unnecessary tail
+    let url = substitute(a:url, '[(),.:;\[\]]\+$', '', '')
+    " "www" stuff
+    if url !~ '^\a\+://'
+      let url = 'http://'.url
+    endif
+    " domain only, without the final slash
+    if url =~ '^\a\+://[^/]\+$'
+      let url = url.'/'
+    endif
+  endif
+  return url
 endfunction
 
 " Line functions
 
-function! s:LineSearch(line)
+function! s:SearchLine(line)
   return strlen(a:line) ? search('\m^'.s:EscapeMagic(a:line).'$', 'w') : 0
 endfunction
 
-function! s:LineDel() range
+function! s:DelLine() range
   let line = getline(a:firstline)
-  silent execute a:firstline.','.a:lastline.'delete _'
+  call s:ExecuteSilent(a:firstline.','.a:lastline.'delete _')
   return line
+endfunction
+
+function! s:OpenNewLine()
+  if strlen(getline('$'))
+    call append('$', '')
+  endif
+
+  call s:ScreenBottom()
 endfunction
 
 " Buffer functions
@@ -3058,7 +3120,7 @@ endfunction
 
 function! s:BufClear()
   if !s:IsBufEmpty()
-    %call s:LineDel()
+    %call s:DelLine()
   endif
 endfunction
 
@@ -3081,14 +3143,14 @@ endfunction
 
 function! s:BufTrim()
   while search('^\s*$', 'w') && line('$') > 1
-    call s:LineDel()
+    call s:DelLine()
   endwhile
 endfunction
 
 function! s:BufUnload(bufname)
   " If it is loaded in another buffer, unload it
   if bufloaded(a:bufname) && bufnr(a:bufname) != bufnr('%')
-    silent execute 'bunload!' a:bufname
+    call s:ExecuteSilent('bunload! '.a:bufname)
   endif
 endfunction
 
@@ -3116,7 +3178,7 @@ endfunction
 
 function! s:WinVisit(winnum)
   if a:winnum >= 0 && a:winnum != winnr()
-    silent execute a:winnum.'wincmd w'
+    call s:ExecuteSilent(a:winnum.'wincmd w')
   endif
   return (a:winnum == winnr())
 endfunction
@@ -3127,14 +3189,14 @@ endfunction
 
 function! s:ScreenBottom()
   $
-  normal! ^
+  call s:DoNormal('^')
   if 0
-    normal! zb
+    call s:DoNormal('zb')
   endif
 endfunction
 
 function! s:ScreenRefresh()
-  execute "normal! \<C-L>"
+  call s:DoNormal("\<C-L>")
 endfunction
 
 function! s:ScreenResize(size, vertical)
@@ -3148,7 +3210,7 @@ function! s:ScreenScroll(cnt)
     let curline = line('.')
     let upw = (a:cnt < 0)
     let cnt = a:cnt * (a:cnt > 0 ? 1 : -1)
-    execute 'normal!' cnt.nr2char(5 * (upw ? 5 : 1))
+    call s:DoNormal(cnt.nr2char(5 * (upw ? 5 : 1)))
     if line('.') != curline
       execute curline
     endif
@@ -3167,20 +3229,21 @@ function! s:GetHlCursor()
 endfunction
 
 function! s:HiliteColumn(bogus, ...)
-  silent! execute 'match' s:GetHlGroup(a:0 ? a:1 : '') '/\%#\S*/'
+  call s:ExecuteSilent('match '.s:GetHlGroup(a:0 ? a:1 : '').' /\%#\S*/')
 endfunction
 
 function! s:HiliteLine(lnum, ...)
-  silent! execute 'match' s:GetHlGroup(a:0 ? a:1 : '')
-	\		      '/^.*\%'.(a:lnum ? a:lnum : line(a:lnum)).'l.*$/'
+  call s:ExecuteSilent('match '.s:GetHlGroup(a:0 ? a:1 : '').
+		      \' /^.*\%'.(a:lnum ? a:lnum : line(a:lnum)).'l.*$/')
 endfunction
 
 function! s:HiliteURL(url)
+  let patrn = substitute(a:url, '\%(^\a\+://\|/$\)', '', 'g')
   " Do you want to retain old highlights?
   if 1
     silent! syntax clear VimIRCURL
   endif
-  silent! execute 'syntax match VimIRCURL "\V'.a:url.'"'
+  call s:ExecuteSilent('syntax match VimIRCURL "\V'.patrn.'"')
   highlight link VimIRCURL DiffChange
 endfunction
 
@@ -3251,7 +3314,7 @@ function! s:SortSelect()
   call s:ModifyBuf(1)
   call s:SortList(cmp, (s:GetVimVar('b:sortdir') + 0))
   call s:ModifyBuf(0)
-  call s:LineSearch(orglin)
+  call s:SearchLine(orglin)
 endfunction
 
 function! s:SortReverse()
@@ -3614,7 +3677,7 @@ function! s:RecvData()
 
   perl <<EOP
 {
-  # MEMO: We're not using $WS currently, due to the blocking issue of syswrite
+  # XXX: We're not using $WS currently, due to the blocking issue of syswrite
   my ($r, $w) = IO::Select->select($RS, $WS, undef, 0.2);
   my $sock;
 
@@ -5340,8 +5403,8 @@ sub find_dccclient_fd
 sub find_dccclient
 {
   # An empty argument will be used as a wildcard (i.e., matches anything)
-  # NOTE: Only searches for a client on the current IRC server, since this
-  #	  will only be called upon queries via that server
+  # NOTE: Only clients on the current IRC server will be searched, since this
+  # will only be called upon queries via that server
   my ($nick, $type, $desc) = @_;
 
   foreach my $dcc (@{$Clients{$Current_Server->{'server'}}})
@@ -6144,8 +6207,8 @@ sub find_chan
 	  $sref = $Current_Server;
 	}
 
-      # XXX:  Here and there I'm assuming `foreach' is faster than `for'.
-      #	      Correct me if it is wrong.
+      # XXX: Here and there I'm assuming `foreach' is faster than `for'.
+      # Correct me if it is wrong.
       foreach my $cref (@{$sref->{'chans'}})
 	{
 	  if ($chan && lc($chan) ne lc($cref->{'name'}))
@@ -7420,7 +7483,7 @@ sub vim_beep
 
 sub vim_search
 {
-  return scalar(VIM::Eval('s:LineSearch("'.do_escape($_[0]).'")'));
+  return scalar(VIM::Eval('s:SearchLine("'.do_escape($_[0]).'")'));
 }
 
 sub vim_gettime
