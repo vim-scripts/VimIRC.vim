@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 Feb 2004
-" Last Change: Tue, 15 Feb 2005 00:04:05 +0900 (JST)
+" Last Change: Wed, 16 Feb 2005 15:22:21 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -58,6 +58,10 @@
 "				  authentication.
 "
 "   Misc.:
+"     (Some of these options are configurable while running, with "/SET"
+"     command)
+"
+"     let g:vimirc_partmsg	="message sent with QUIT/PART"
 "
 "     let g:vimirc_autojoin	="#chan1,#chan2"
 "				="#chan1|#chan2@irc.foo.com,#chan3@irc.bar.com"
@@ -104,7 +108,17 @@
 "				  client.  Pressing "R" on the list buffer
 "				  refreshes it anyway regardless of the value.
 "
-"     let g:vimirc_partmsg	="message sent with QUIT/PART"
+"     let g:vimirc_browser	="web-browser"
+"				  (default: see GetUserBrowser())
+"				  The name of the web browser program which is
+"				  to be invoked when hitting "<CR>" near a
+"				  URL-like string.
+"
+"				  You can insert the special argument "%URL%",
+"				  which will be replaced with the actual URL,
+"				  so that you can specify other arguments
+"				  after it like this:
+"				    "kterm -rv -e lynx %URL% &"
 "
 "     let g:vimirc_winmode	="single" is the only valid value.
 "				  (default: multi-windows mode)
@@ -280,7 +294,7 @@ endif
 let s:save_cpoptions = &cpoptions
 set cpoptions&
 
-let s:version = '0.9.1'
+let s:version = '0.9.2'
 let s:client  = 'VimIRC '.s:version
 
 "
@@ -374,6 +388,29 @@ function! s:GetUserInfo(args)
   return 1
 endfunction
 
+function! s:GetUserBrowser()
+  let browser = ''
+  if s:IsWin3264()
+    let browser = 'start explorer'
+  elseif has('mac')
+    let browser = "osascript -e 'open location %URL%'"
+  elseif has('unix')
+    let browser = executable('mozilla')
+	  \	  ? 'mozilla'
+	  \	  : executable('netscape')
+	  \	    ? 'netscape'
+	  \	    : executable('lynx')
+	  \	      ? 'lynx'
+	  \	      : executable('w3m') ? 'w3m' : ''
+  endif
+
+  if !strlen(browser)
+    let browser = substitute(s:Input('Enter the name of your web browser'),
+	  \							  '^!', '', '')
+  endif
+  return browser
+endfunction
+
 function! s:GetServerOption(option, server)
   let option = a:option
   " option1@server1,option2@server2
@@ -435,6 +472,8 @@ function! s:InitVars()
   call s:SetVarIntern('vimirc_rcfile', s:logdir.'/.vimircrc')
   " Channels list will be refreshed after these amount of seconds have passed
   call s:SetVarIntern('vimirc_listexpire', (60 * 60 * 24 * 7))
+  " External Web browser
+  call s:SetVarIntern('vimirc_browser')
   " Directory where incoming dcc files should go
   call s:SetVarIntern('vimirc_dccdir', s:logdir.'/dcc')
   " Port you want to listen to
@@ -473,14 +512,7 @@ endfunction
 function! s:RegularizeVarIntern(var)
   let var = 's:{a:var}'
   " Fix irregularities if encountered
-  if a:var ==# 'partmsg'
-    " Prepend a leading colon
-    let {var} = substitute({var}, '^[^:]', ':&', '')
-  elseif a:var =~# '\%(dir\|file\)$'
-    let {var} = s:RegularizePath({var})
-  elseif a:var ==# 'winmode'
-    call s:ToggleWinmode({var})
-  elseif a:var =~# '^\%(autoaway\|autoawaytime\|cmdheight\|dccport\|infowidth\|listexpire\|log\|nickswidth\)$'
+  if a:var =~# '^\%(autoaway\|autoawaytime\|cmdheight\|dccport\|infowidth\|listexpire\|log\|nickswidth\)$'
     " Make sure the value is a valid numeral
     let {var} = {var} + 0
     if a:var ==# 'dccport'
@@ -493,6 +525,16 @@ function! s:RegularizeVarIntern(var)
 	let {var} = 1
       endif
       call s:ResizeWin(1)
+    endif
+  else
+    let {var} = s:StrCompress({var})
+    if a:var ==# 'partmsg'
+      " Prepend a leading colon
+      let {var} = substitute({var}, '^[^:]', ':&', '')
+    elseif a:var =~# '\%(dir\|file\)$'
+      let {var} = s:RegularizePath({var})
+    elseif a:var ==# 'winmode'
+      call s:ToggleWinmode({var})
     endif
   endif
 endfunction
@@ -1263,6 +1305,7 @@ function! s:DoSettings()
   setlocal noswapfile
   setlocal wrap
   nnoremap <buffer> <silent> <Space>  :call <SID>MainLoop()<CR>
+  nnoremap <buffer> <silent> <CR>     :call <SID>OpenLink()<CR>
   nnoremap <buffer> <silent> a	      :call <SID>OpenBuf_Command()<CR>
   nnoremap <buffer> <silent> A	      :call <SID>OpenBuf_Command()<CR>
   nnoremap <buffer> <silent> i	      :call <SID>OpenBuf_Command()<CR>
@@ -1367,10 +1410,11 @@ function! s:InitBuf_Info(bufname)
   let b:server	= 'Connections'
   let b:title	= ' '.b:server
   call s:DoSettings()
-  call s:DoHilite_Info()
   setlocal nowrap
   nnoremap <buffer> <silent> <CR>	:call <SID>EnterChanServ(0)<CR>
   nnoremap <buffer> <silent> <C-W><CR>	:call <SID>EnterChanServ(1)<CR>
+  nunmap <buffer> <CR>
+  call s:DoHilite_Info()
   call s:SetBufNum(a:bufname, bufnr('%'))
 endfunction
 
@@ -1391,7 +1435,7 @@ function! s:InitBuf_List(bufname)
   let b:updated = 0
   call s:DoSettings()
   setlocal nowrap
-  nnoremap <buffer> <silent> <CR> :call <SID>StartChannel()<CR>
+  "nnoremap <buffer> <silent> <CR> :call <SID>StartChannel()<CR>
   " I take Mutt's key-bindings for sorting
   nnoremap <buffer> <silent> o	  :call <SID>SortSelect()<CR>
   nnoremap <buffer> <silent> O	  :call <SID>SortReverse()<CR>
@@ -1428,10 +1472,11 @@ function! s:InitBuf_Nicks(bufname, channel)
   let b:channel = a:channel
   let b:title	= a:channel
   call s:DoSettings()
-  call s:DoHilite_Nicks()
   setlocal nowrap
   nnoremap <buffer> <silent> <CR> :call <SID>SelectNickAction()<CR>
   vnoremap <buffer> <silent> <CR> :call <SID>SelectNickAction()<CR>
+  nunmap <buffer> <CR>
+  call s:DoHilite_Nicks()
   call s:SetBufNum(a:bufname, bufnr('%'))
   if s:IsNick(a:channel)
     call s:FillBuf_Nicks(a:channel)
@@ -1537,7 +1582,9 @@ function! s:CloseBuf_Server()
     if s:log >= 2
       call s:LogBuffer(bufnum)
     endif
-    "call s:CloseBufNum(bufnum)
+    if !s:singlewin
+      call s:CloseBufNum(bufnum)
+    endif
   endif
 endfunction
 
@@ -1590,7 +1637,7 @@ function! s:CloseBuf_Nicks(channel, server)
   call s:CloseBufNum(s:GetBufNum_Nicks(a:channel, a:server))
 endfunction
 
-function! s:CloseBuf_Command(dest, purge)
+function! s:CloseBuf_Command(destbuf, purge)
   if !exists('s:channel')
     " Called outside the SendLines() (command line) context
     return
@@ -1604,12 +1651,12 @@ function! s:CloseBuf_Command(dest, purge)
       call s:CloseBufNum(bufnum)
     endif
 
-    if bufnum != a:dest
+    if a:destbuf != bufnum
       " Move the cursor to the destined place
-      call s:VisitBufNum(a:dest)
+      call s:VisitBufNum(a:destbuf)
     else
       " Move the cursor back onto the channel/server where command mode was
-      " triggered.
+      " (supposedly) triggered.
       call s:VisitBuf_ChanChatServ(s:channel)
     endif
     call s:HiliteLine('.')
@@ -1830,12 +1877,10 @@ function! s:HandleKey(key)
       call s:EnterChanServ(0)
     elseif s:IsBufCommand()
       call s:SendLines()
-    elseif s:IsBufList()
-      call s:StartChannel()
     elseif s:IsBufNicks()
       call s:SelectNickAction()
     else
-      execute 'normal!' char
+      call s:OpenLink()
     endif
   elseif char =~# '[p]'		" scroll backward
     execute 'normal!' nr2char(2)
@@ -1904,16 +1949,22 @@ function! s:SendLines() range
     return
   endif
 
-  " Remember the context for a while in which the command/message was entered
-  call s:SetCurServer(b:server)
-  call s:SetCurChannel(b:channel)
-
   try
     let curbuf = bufnr('%')
+    let destbuf= curbuf
+
     let i = a:firstline
-    while i <= a:lastline && s:VisitBufNum(curbuf)
+    while s:VisitBufNum(curbuf)
+      " Remember the context for a while in which the command/message was
+      " entered.
+      " NOTE: Current server/buffer may change each time after SendLine()
+      call s:SetCurServer(b:server, b:channel)
+      if i > a:lastline
+	call s:CloseBuf_Command(destbuf, (a:firstline == a:lastline))
+	break
+      endif
       " Get the destination buffer
-      let dest = s:SendLine(s:ExpandAlias(s:StrTrim(getline(i))))
+      let destbuf = s:SendLine(s:ExpandAlias(s:StrTrim(getline(i))))
       let i = i + 1
     endwhile
   catch
@@ -1922,7 +1973,6 @@ function! s:SendLines() range
     endif
     return
   finally
-    call s:CloseBuf_Command(dest, (a:firstline == a:lastline))
     unlet s:channel
     call s:SetLastActive()
   endtry
@@ -1964,8 +2014,8 @@ endfunction
 function! s:Cmd_SET(optval)
   let set = 0
   " Settable options
-  let numopt = 'autoaway autoawaytime log dccport listexpire infowidth '.
-	      \'nickswidth cmdheight'
+  let numopt = 'autoaway autoawaytime browser log dccport listexpire '.
+	      \'infowidth nickswidth cmdheight'
   let stropt = 'winmode partmsg'
 
   let rx = '^\(\S\+\)\%(\s\+\(.\+\)\)\=$'
@@ -2044,9 +2094,7 @@ function! s:SelectNickAction() range
 
   " Set the current server appropriately, so the command will be sent to the
   " one user intended
-  call s:SetCurServer(b:server)
-  call s:SetCurChannel(b:channel)
-
+  call s:SetCurServer(b:server, b:channel)
   try
     if choice == 1
       call s:DoSend('WHOIS', substitute(nicks, ' ', ',', 'g'))
@@ -2120,14 +2168,11 @@ function! s:StartServer(servers)
   endwhile
 endfunction
 
-function! s:StartChannel()
-  if s:IsBufList()
-    let channel = matchstr(getline('.'), '^\S\+')
-    if s:IsChannel(channel) && s:GetConf_YN('Join channel '.channel.'?')
-      call s:SetCurServer(b:server)
-      call s:Send_JOIN('JOIN', channel)
-      call s:MainLoop()
-    endif
+function! s:StartChannel(channel)
+  if s:GetConf_YN('Join channel '.a:channel.'?')
+    call s:SetCurServer(b:server)
+    call s:Send_JOIN('JOIN', a:channel)
+    call s:MainLoop()
   endif
 endfunction
 
@@ -2194,6 +2239,67 @@ function! s:UpdateList()
 	    \							'WarningMsg')
     endif
     call s:MainLoop()
+  endif
+endfunction
+
+"
+" Opening URLs with web browser
+" (heavily borrowed from Chalice)
+"
+
+function! s:MatchURL(str)
+  return substitute(matchstr(a:str, '\%(\%(ftp\|https\=\)://\|www\.\)\S\+'),
+	\					    '[(),.:;\[\]]\+$', '', '')
+endfunction
+
+function! s:ExtractChannel()
+  let channel = expand('<cWORD>')
+  return (s:IsBufList() && s:IsChannel(channel)) ? channel : ''
+endfunction
+
+function! s:ExtractURL()
+  " Get the URL under cursor
+  let url = s:MatchURL(expand('<cWORD>'))
+  if !strlen(url)
+    let url = s:MatchURL(strpart(getline('.'), col('.')))
+    if !strlen(url)
+      let url = s:MatchURL(getline('.'))
+    endif
+  endif
+  return url
+endfunction
+
+function! s:OpenLink()
+  let url = s:ExtractChannel()
+  if strlen(url)
+    call s:StartChannel(url)
+  else
+    let url = s:ExtractURL()
+    if 0
+      "TODO: Open it with VimIRC if it looks like IRC server
+      call s:StartServer(url)
+    elseif strlen(url)
+      let s:browser = substitute(s:browser, '^!', '', '')
+      if !strlen(s:browser)
+	let s:browser = s:GetUserBrowser()
+      endif
+
+      call s:HiliteURL(url)
+      if strlen(s:browser)
+	let comd = s:browser
+	let url = s:StrQuote(s:EscapeFName(url))
+
+	if comd =~# '%URL%'
+	  " Avoid special chars to be replaced with the matched pattern
+	  let comd = substitute(comd, '%URL%', escape(url, '&\'), 'g')
+	else
+	  let comd = comd.' '.url
+	endif
+	call s:ExecuteShell(comd)
+      endif
+    else
+      execute "normal! \<CR>"
+    endif
   endif
 endfunction
 
@@ -2778,6 +2884,19 @@ function! s:ExecuteSafe(prefix, comd)
   execute (exists(':'.a:prefix) == 2 ? a:prefix.' ' : '').a:comd
 endfunction
 
+function! s:ExecuteShell(comd)
+  let comd = a:comd
+  if &shellxquote == '"' && s:IsWin3264() && a:comd =~? '^start '
+    " Remove unecessary escapes
+    let comd = substitute(a:comd, '\\"\@=', '', 'g')
+  endif
+  silent execute '!'.comd
+endfunction
+
+function! s:IsWin3264()
+  return (has('win32') || has('win32unix') || has('win64'))
+endfunction
+
 function! s:Write(file, append)
   " TODO: Range support
   if s:IsBufEmpty()
@@ -2810,6 +2929,15 @@ endfunction
 function! s:HiliteLine(lnum, ...)
   silent! execute 'match' (a:0 ? a:1 : s:GetHiCursor())
 	\ '/^.*\%'.(a:lnum ? a:lnum : line(a:lnum)).'l.*$/'
+endfunction
+
+function! s:HiliteURL(url)
+  " Do you want to retain old highlights?
+  if 1
+    silent! syntax clear VimIRCURL
+  endif
+  silent! execute 'syntax match VimIRCURL "\V'.a:url.'"'
+  highlight link VimIRCURL DiffChange
 endfunction
 
 function! s:HiliteClear()
@@ -2873,6 +3001,11 @@ function! s:StrMatched(str, pat, sub)
   " be obtained.  An empty string will be returned on failure.
   " I took this clever trick from Chalice.
   return substitute(matchstr(a:str, a:pat), a:pat, a:sub, '')
+endfunction
+
+function! s:StrQuote(str)
+  let quote = (&shellxquote == '"' ? '\' : '').'"'
+  return quote.a:str.quote
 endfunction
 
 " Remove unnecessary spaces in a string
@@ -3213,7 +3346,11 @@ endfunction
 " (developer) can omit `server' argument for some functions even if you should
 " provide one.  So, don't forget to call this when necessary so that vimirc
 " will not get confused about which server should be addressed to.
-function! s:SetCurServer(server)
+function! s:SetCurServer(server, ...)
+  if a:0
+    call s:SetCurChannel(a:1)
+  endif
+
   if a:server ==# s:GetVimVar('s:server')
     return
   endif
@@ -3230,7 +3367,9 @@ EOP
 endfunction
 
 function! s:SetCurChannel(channel)
-  let s:channel = a:channel
+  if !(exists('s:channel') && s:channel ==# a:channel)
+    let s:channel = a:channel
+  endif
 endfunction
 
 function! s:GetCurNick()
@@ -3586,7 +3725,7 @@ endfunction
 
 function! s:Send_PART(comd, args)
   " XXX: According to RFC1459, PART command only accepts channels.
-  let args = strlen(a:args) ? a:args : (s:IsChannel('s:channel')
+  let args = strlen(a:args) ? a:args : (s:IsChannel(s:channel)
 	\				? s:channel.' '.s:partmsg : '')
   if !strlen(args)
     return
