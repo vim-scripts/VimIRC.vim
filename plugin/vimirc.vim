@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 Feb 2004
-" Last Change: Fri, 25 Mar 2005 02:30:40 +0900 (JST)
+" Last Change: Sat, 26 Mar 2005 11:58:35 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -319,7 +319,7 @@
 if exists('g:loaded_vimirc') || &compatible
   finish
 endif
-let s:version = '0.9.16'
+let s:version = '0.9.17'
 
 let s:debug = (s:version =~# '-devel$')
 if !s:debug
@@ -675,7 +675,6 @@ function! s:QuitVimIRC()
       throw 'IMGONNAQUIT'
     endif
   finally
-    call s:RedrawScreen(1)
     call s:PromptKey(0, ' Thanks for flying VimIRC', 'Title')
     call s:ResetSysVars()
   endtry
@@ -700,8 +699,8 @@ function! s:QuitWhat(severe)
       endif
     endif
   else
-    if s:IsConnected(s:GetVimVar('b:server'))
-      if s:Confirm_YN('Really disconnect with server '.b:server)
+    if s:IsConnected()
+      if s:Confirm_YN('Really disconnect with server '.s:server)
 	call s:Send_QUIT('QUIT', '')
       endif
     else
@@ -723,14 +722,16 @@ function! s:MainLoop()
   try
     call s:PreMainLoop()
     while 1
-      try
-	call s:HandleKey(getchar(0))
-      catch /:E\%(21\|35\|486\|492\):/
-	" Catch some familiar errors
-	call s:EchoError(s:StrDivide(v:exception, 2))
-      catch /:E132:/
-	" Pressed the same key for a long time.  Just ignore it.
-      endtry
+      if getchar(1)
+	try
+	  call s:HandleKey(getchar(0))
+	catch /:E\%(21\|35\|443\|486\|492\):/
+	  " Catch some familiar, or low severity errors
+	  call s:EchoError(s:StrDivide(v:exception, 2))
+	catch /:E132:/
+	  " Pressed the same key for a long time.  Just ignore it.
+	endtry
+      endif
       if s:DoTimer(!s:RecvData())
 	break
       endif
@@ -740,7 +741,7 @@ function! s:MainLoop()
     " NOTE: You cannot see new messages posted while posting
   catch /^Vim:Interrupt$/
     if 1 && s:IsBufType_Command()
-      startinsert
+      call s:DoInsert(0)
     endif
   catch
     echoerr v:exception
@@ -752,13 +753,13 @@ endfunction
 function! s:PreMainLoop()
   let s:in_loop = 1
   " Show line-cursor, so the user can easily recognize that she is online
-  call s:HiliteLine('.')
   call s:ToggleCursor(1)
+  call s:HiliteLine('.')
 endfunction
 
 function! s:PostMainLoop()
-  call s:ToggleCursor(0)
   call s:HiliteClear()
+  call s:ToggleCursor(0)
   let s:in_loop = 0
 endfunction
 
@@ -1336,7 +1337,7 @@ function! s:OpenBuf_Command()
   endif
 
   call s:OpenNewLine()
-  startinsert
+  call s:DoInsert(0)
 endfunction
 
 function! s:PostOpenBuf_Server()
@@ -1466,9 +1467,9 @@ function! s:DoSettings()
   setlocal wrap
 
   nnoremap <buffer> <silent> <Space>	:call <SID>MainLoop()<CR>
-  nnoremap <buffer> <silent> <CR>	:call <SID>StartWeb(0)<CR>
-  nnoremap <buffer> <silent> <C-CR>	:call <SID>StartWeb(1)<CR>
-  nnoremap <buffer> <silent> <S-CR>	:call <SID>StartWeb(1)<CR>
+  nnoremap <buffer> <silent> <CR>	:call <SID>OpenLink(0)<CR>
+  nnoremap <buffer> <silent> <C-CR>	:call <SID>OpenLink(1)<CR>
+  nnoremap <buffer> <silent> <S-CR>	:call <SID>OpenLink(1)<CR>
   nnoremap <buffer> <silent> a		:call <SID>OpenBuf_Command()<CR>
   nnoremap <buffer> <silent> A		:call <SID>OpenBuf_Command()<CR>
   nnoremap <buffer> <silent> i		:call <SID>OpenBuf_Command()<CR>
@@ -1900,10 +1901,12 @@ function! s:CloseWin_IRC()
   if !s:CloseWin_What('s:IsBufType_IRC')
     enew!
   endif
+  call s:RedrawScreen(0)
 endfunction
 
 function! s:CloseWin_DeadServer()
   call s:CloseWin_What('s:IsBufType_ServerDead')
+  call s:RedrawScreen(0)
 endfunction
 
 "
@@ -1968,17 +1971,13 @@ function! s:HandleEnter(shifted)
       return s:SelectNickAction()
     endif
   endif
-  return s:StartWeb(a:shifted)
+  return s:OpenLink(a:shifted)
 endfunction
 
 function! s:HandleKey(key)
   let char = s:Key2Char(a:key)
-  if !strlen(char)
-    return
-  elseif !a:key
-    " KLUGE: Without this, special keys keep generating the key codes by
-    " themselves
-    silent! normal! lh
+  if !a:key
+    call s:UnstickKey(0)
   endif
 
   call s:HiliteClear()
@@ -1989,7 +1988,7 @@ function! s:HandleKey(key)
 	\ || char == "\<BS>"  || char == "\<C-Y>" || char == "\<C-U>"
 	\ || char == "\<C-O>" || char == "\<C-^>"
     " One char commands
-    if a:key == 9
+    if a:key == 9		" <TAB>
       let char = '1'.char
     endif
     call s:DoNormal(char)
@@ -2001,15 +2000,19 @@ function! s:HandleKey(key)
   elseif (char + 0) || char == "\<C-W>"
     " Accept things like "10G", "<C-W>2k"
     call s:HandleMultiKey(char, 1)
+  elseif char == "\<CR>" || char == "\<C-CR>" || char == "\<S-CR>"
+    call s:HandleEnter(!(char == "\<CR>"))
   elseif char == "\<C-N>" || char == "\<C-P>"
-    call s:WalkThruChanServ(char == "\<C-N>", 0)
-  elseif char == "\<C-L>"
-    call s:ResizeWin(1)
+    call s:WalkThruChanServ((char == "\<C-N>"), 0)
   elseif char =~# '^[:]$'
     if s:Execute(s:DoInput(0, ':', ''))
-      " Pause for commands which produce outputs
+      " Pause after commands which produce outputs
       return s:PromptEnter()
     endif
+  elseif char =~# '^[/?]$'
+    call s:SearchWord(char)
+  elseif char == "\<C-L>"
+    call s:ResizeWin(1)
   elseif char =~# '^[ORo]$' && s:IsBufType_List()
     if char ==# 'R'
       call s:UpdateList()
@@ -2022,15 +2025,11 @@ function! s:HandleKey(key)
       if char ==# 'I'
 	call s:DoNormal('^')
       endif
-      execute 'startinsert'.(char ==? 'a' ? '!' : '')
+      call s:DoInsert(char ==? 'a')
     else
       call s:OpenBuf_Command()
     endif
     throw 'IMGONNAPOST'
-  elseif char =~# '^[/?]$'
-    call s:SearchWord(char)
-  elseif char == "\<CR>" || char == "\<C-CR>" || char == "\<S-CR>"
-    call s:HandleEnter(!(char == "\<CR>"))
   elseif char == "\<F1>"
     call s:Cmd_HELP()
   elseif char ==? 'q'
@@ -2038,11 +2037,10 @@ function! s:HandleKey(key)
   endif
 
   call s:HiliteBuffer()
-  " Speed up jjjjjjjjjjjjj like inputs
-  if getchar(1) && getchar(0) == a:key
-    " HACK: Discard excessive keytypes (Chalice)
-    while getchar(1)|call getchar(0)|endwhile
-    return s:HandleKey(a:key)
+  " Accept repetitive inputs
+  let key = s:ConsumeKey()
+  if !s:IsZero(key)
+    return s:HandleKey(key)
   endif
 
   call s:SetLastActive()
@@ -2063,8 +2061,10 @@ function! s:HandleMultiKey(char, multi)
     endif
   endwhile
 
+  call s:UnstickKey(0)
+  " XXX: Some commands could get stuck
   if comd[0] == "\<C-W>"
-    if comd[1] == "\<CR>"
+    if char == "\<CR>" || char == "\<C-CR>" || char == "\<S-CR>"
       call s:HandleEnter(1)
     elseif comd[1] == "\<C-N>" || comd[1] ==? 'n'
       call s:WalkThruChanServ(1, 1)
@@ -2243,7 +2243,7 @@ function! s:SetLastActive()
 endfunction
 
 function! s:SelectNickAction() range
-  if !s:IsBufType_Nicks()
+  if !(s:IsBufType_Nicks() && s:IsConnected(b:server))
     return
   endif
 
@@ -2702,7 +2702,8 @@ function! s:StartServer(servers)
 endfunction
 
 function! s:StartChannel(channel, split)
-  if s:Confirm_YN('Join channel '.a:channel)
+  if s:IsConnected(s:GetVimVar('b:server'))
+	\			    && s:Confirm_YN('Join channel '.a:channel)
     let s:split = a:split
 
     call s:SetCurServer(b:server)
@@ -2724,6 +2725,23 @@ function! s:StartChat(nick, ...)
   endif
 endfunction
 
+function! s:StartWeb(url)
+  let comd = s:Confirm_YN('Really open url '.a:url) ? s:GetUserBrowser() : ''
+
+  if strlen(comd)
+    call s:HiliteURL(a:url)
+    let url = s:StrQuote(s:EscapeFName(a:url))
+    if comd =~# '%URL%'
+      " Avoid special chars to be replaced with the matched pattern
+      let comd = substitute(comd, '%URL%', escape(url, '&\'), 'g')
+    else
+      let comd = comd.' '.url
+    endif
+    call s:ExecuteShell(comd)
+  endif
+  return strlen(comd)
+endfunction
+
 function! s:Cmd_QUERY(args)
   if !strlen(a:args)
     call s:QuitChat(s:channel)
@@ -2733,7 +2751,7 @@ function! s:Cmd_QUERY(args)
 endfunction
 
 function! s:UpdateList()
-  if s:IsBufType_List()
+  if s:IsBufType_List() && s:IsConnected(b:server)
     " Prevent excessive updating
     if (localtime() - b:updated) > 60
       call s:ModifyBuf(1)
@@ -2792,27 +2810,14 @@ function! s:ExtractLink()
   return url
 endfunction
 
-function! s:StartWeb(split)
+function! s:OpenLink(split)
   let url = s:ExtractLink()
   if s:IsChannel(url)
     call s:StartChannel(url, a:split)
   else
     if "TODO: Open it with VimIRC if it looks like IRC server"
       call s:StartServer(url)
-    elseif strlen(url)
-      let comd = s:GetUserBrowser()
-      if strlen(comd)
-	call s:HiliteURL(url)
-	let url = s:StrQuote(s:EscapeFName(url))
-	if comd =~# '%URL%'
-	  " Avoid special chars to be replaced with the matched pattern
-	  let comd = substitute(comd, '%URL%', escape(url, '&\'), 'g')
-	else
-	  let comd = comd.' '.url
-	endif
-	call s:ExecuteShell(comd)
-      endif
-    else
+    elseif !(strlen(url) && s:StartWeb(url))
       call s:DoNormal("\<CR>")
     endif
   endif
@@ -3194,6 +3199,10 @@ function! s:ExecuteSilent(comd)
   return !strlen(v:errmsg)
 endfunction
 
+function! s:DoInsert(append)
+  execute 'startinsert'.(a:append ? '!' : '')
+endfunction
+
 " Executes normal mode commands.  Do not try to make changes with this.
 function! s:DoNormal(comd, ...)
   if !strlen(a:comd)
@@ -3277,6 +3286,7 @@ endfunction
 function! s:Confirm(mesg, list)
   let choice = 0
   call s:UntoggleCursor(1)
+
   try
     let choice = confirm(a:mesg, a:list)
   catch /^Vim:Interrupt$/
@@ -3302,6 +3312,7 @@ endfunction
 function! s:DoInput(secret, mesg, text)
   let input = ''
   call s:UntoggleCursor(1)
+
   try
     let input = s:StrCompress(input{a:secret ? 'secret' : ''}(a:mesg, a:text))
   catch /^Vim:Interrupt$/
@@ -3311,9 +3322,13 @@ function! s:DoInput(secret, mesg, text)
   return input
 endfunction
 
+function! s:IsZero(key)
+  return (''.a:key == '0')
+endfunction
+
 function! s:Key2Char(key)
   " Special keys (<F1> etc.) are char values already (f_getchar() in eval.c)
-  return (a:key || ''.a:key == '0') ? nr2char(a:key) : a:key
+  return (a:key || s:IsZero(a:key)) ? nr2char(a:key) : a:key
 endfunction
 
 if 0
@@ -3369,6 +3384,7 @@ endfunction
 " PromptKey with timeout feature
 function! s:PromptKeyTick(timeout, mesg, hlname)
   let key = 0
+
   try
     let startT = localtime()
     while (a:timeout - (s:DoTick(a:mesg, '\|/-', a:hlname) - startT)) > 0
@@ -3399,6 +3415,7 @@ endfunction
 function! s:RequestFile(mesg)
   let fname = ''
   call s:UntoggleCursor(1)
+
   try
     let fname = has('browse') ? browse(0, 'Select file '.a:mesg, './', '')
 	  \		      : input('Enter filename '.a:mesg.': ')
@@ -3414,6 +3431,25 @@ function! s:SearchWord(comd)
   if strlen(word)
     let @/ = word
     call s:DoNormal((a:comd == '/' ? 'n' : 'N'))
+  endif
+endfunction
+
+function! s:ConsumeKey()
+  let key = getchar(0)
+  while !s:IsZero(getchar(1))
+    if !key
+      call s:UnstickKey(1)
+    endif
+    call getchar(0)
+  endwhile
+  return key
+endfunction
+
+" KLUGE: Without this, special keys entered in normal mode keep generating key
+" codes by themselves, resulting in user-interaction impossibility (vim bug?)
+function! s:UnstickKey(force)
+  if a:force || !s:IsZero(getchar(1))
+    call s:DoNormal('lh')
   endif
 endfunction
 
@@ -3651,9 +3687,11 @@ function! s:ScreenLine(lnum)
 endfunction
 endif
 
-function! s:ScreenRefresh()
-  call s:DoNormal("\<C-L>")
-endfunction
+if 0
+  function! s:ScreenRefresh()
+    call s:DoNormal("\<C-L>")
+  endfunction
+endif
 
 function! s:ScreenResize(size, vertical)
   if a:size > 0
@@ -3679,46 +3717,37 @@ function! s:GetHilite(name, mode)
 endfunction
 
 function! s:SetHilite(name, fg, bg, ...)
-  " TODO: Deal with bold, underline, etc.
   let mode= has('gui') ? 'gui' : 'cterm'
   let fg  = strlen(a:fg) ? a:fg : 'NONE'
   let bg  = strlen(a:bg) ? a:bg : 'NONE'
   let etc = (a:0 && strlen(a:1)) ? a:1 : 'NONE'
 
-  call s:ExecuteSilent('highlight '.a:name.' '.mode.'='.etc.
-			\' '.mode.'fg='.fg.' '.mode.'bg='.bg)
+  execute 'highlight' (a:name) (mode.'='.etc) (mode.'fg='.fg) (mode.'bg='.bg)
 endfunction
-
-if 0
-  function! s:GetHlGroup(group)
-    return hlexists(a:group) ? a:group : s:GetHlCursor()
-  endfunction
-
-  function! s:GetHlCursor()
-    if !(exists('s:hl_cursor') && hlexists(s:hl_cursor))
-      call s:SetHlCursor()
-    endif
-    return s:hl_cursor
-  endfunction
-endif
 
 function! s:SetHlCursor()
   " TODO: Deal with colorscheme changes
+  let hlname = 'Cursor'
   let s:hl_cursor = 'VimIRCCursor'
 
-  let s:cursor_fg = s:GetHilite('Cursor', 'fg')
-  let s:cursor_bg = s:GetHilite('Cursor', 'bg')
-
-  let etc = (s:GetHilite('Cursor', 'bold') ? 'bold' : '').
-	   \(s:GetHilite('Cursor', 'italic') ? ',italic' : '').
-	   \(s:GetHilite('Cursor', 'reverse') ? ',reverse' : '').
-	   \(s:GetHilite('Cursor', 'underline') ? ',underline' : '')
-  let s:cursor_etc = s:StrCompress(etc, ',')
-
+  let s:cursor_fg = s:GetHilite(hlname, 'fg')
+  let s:cursor_bg = s:GetHilite(hlname, 'bg')
   if !(strlen(s:cursor_fg) || strlen(s:cursor_bg))
-    let s:cursor_fg = s:GetHilite('Visual', 'fg')
-    let s:cursor_bg = s:GetHilite('Visual', 'bg')
+    let hlname = 'Visual'
+    let s:cursor_fg = s:GetHilite(hlname, 'fg')
+    let s:cursor_bg = s:GetHilite(hlname, 'bg')
   endif
+
+  let s:cursor_etc = ''
+  let etclist = 'bold,italic,reverse,underline'
+  while strlen(etclist)
+    let etc = s:StrDivide(etclist, 1)
+    if s:GetHilite(hlname, etc)
+      let s:cursor_etc = (strlen(s:cursor_etc) ? s:cursor_etc.',' : '').etc
+    endif
+    let etclist = s:StrDivide(etclist, 2)
+  endwhile
+
   call s:SetHilite(s:hl_cursor, s:cursor_fg, s:cursor_bg, s:cursor_etc)
 endfunction
 
@@ -3741,6 +3770,12 @@ function! s:HiliteBuffer()
   call s:HiliteColumn(s:IsBufType_Info() ? 'DiffText' : s:hl_cursor)
 endfunction
 
+function! s:HiliteClear()
+  match none
+  " Clear command line incidentally
+  call s:ClearCommand(0)
+endfunction
+
 " Function calls should be as few as possible for better performance
 function! s:HiliteColumn(...)
   silent! execute 'match '.(a:0 ? a:1 : s:hl_cursor).' /\%#\s*\S*/'
@@ -3761,12 +3796,6 @@ function! s:HiliteURL(url)
   endif
   call s:ExecuteSilent('syntax match VimIRCURL "\V'.patrn.'"')
   highlight link VimIRCURL DiffChange
-endfunction
-
-function! s:HiliteClear()
-  match none
-  " Clear command line incidentally
-  call s:ClearCommand(0)
 endfunction
 
 "
