@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 February 2004
-" Last Change: Tue, 09 Mar 2004 21:37:02 +0900 (JST)
+" Last Change: Fri, 12 Mar 2004 10:06:02 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -19,8 +19,8 @@
 "     VimIRC achieves real-time message reception by implementing its own main
 "     loop.  Therefore, while you are out of it, VimIRC has no way to get new
 "     messages.  So my recommendation is, use a shortcut which creates
-"     a VimIRC-dedicated instance of Vim, where you don't do normal editing
-"     sessions.
+"     a VimIRC-dedicated instance of Vim, where you do not initiate normal
+"     editing sessions.
 "
 " Requirements:
 "   * Vim 6.2 or later with perl interface enabled
@@ -28,15 +28,14 @@
 "     not implemented yet)
 "
 " Options:
-"   let g:plugin_vimirc_nick		nickname
-"   let g:plugin_vimirc_user		username
-"   let g:plugin_vimirc_realname	full name
-"   let g:plugin_vimirc_umode		user mode set upon logon (not
-"					working?)
-"   let g:plugin_vimirc_server		your favorite IRC server. in a format:
-"					  irc.foobar.com:6667
-"					(default is irc.freenode.net)
-"   let g:plugin_vimirc_partmsg		message sent with QUIT/PART
+"   let g:vimirc_nick		nickname
+"   let g:vimirc_user		username
+"   let g:vimirc_realname	full name
+"   let g:vimirc_umode		user mode set upon logon (not working?)
+"   let g:vimirc_server		your favorite IRC server. in a format:
+"				  irc.foobar.com:6667
+"				(default is irc.freenode.net)
+"   let g:vimirc_partmsg	message sent with QUIT/PART
 "
 "   Runtime Options:
 "     You can pass the following options to the command :VimIRC, overriding
@@ -71,17 +70,17 @@
 "
 "		  Special cases:
 "
-"		  * In a channels list window (which opens up with /list
+"		  * In a channels list window (which should open up with /list
 "		    command), you can type "o" to sort the list, "O" to
 "		    reverse it (I took these mappings from Mutt the e-mail
 "		    client).
 "		    Hitting <CR> will prompt you whether to join the channel
 "		    where the cursor is.
 "
-"   Command mode: This is just a normal buffer opened at the bottom of the
-"		  screen.  Enter IRC commands here.  Hitting <CR>, both in
-"		  insert and normal mode, will send the cursor line instantly
-"		  either as a command or a message.
+"   Command mode: This is just a normal buffer opened (at the bottom of the
+"		  screen|below the current window).  Enter IRC commands here.
+"		  Hitting <CR>, both in insert and normal mode, will send out
+"		  the cursor line instantly either as a command or a message.
 "
 "		  Every IRC command starts with "/".  E.g.: /join #vim,#c
 "
@@ -124,7 +123,7 @@ endif
 let s:save_cpoptions = &cpoptions
 set cpoptions&
 
-let s:version = '0.5.1'
+let s:version = '0.5.2'
 let s:client = 'VimIRC '.s:version
 " Set this to zero when releasing, which I'll occasionally forget, for sure
 let s:debug = 0
@@ -146,7 +145,7 @@ function! s:ObtainUserInfo(args)
   if !retval
     let s:nick = s:StrMatched(a:args, '-n\s*\(\S\+\)', '\1')
     if !strlen(s:nick)
-      let s:nick = s:GetVimVar('g:plugin_vimirc_nick')
+      let s:nick = s:GetVimVar('g:vimirc_nick')
       if !strlen(s:nick)
 	let s:nick = expand('$IRCNICK')
 	if s:nick ==# '$IRCNICK'
@@ -157,7 +156,7 @@ function! s:ObtainUserInfo(args)
 
     let s:user = s:StrMatched(a:args, '-u\s*\(\S\+\)', '\1')
     if !strlen(s:user)
-      let s:user = s:GetVimVar('g:plugin_vimirc_user')
+      let s:user = s:GetVimVar('g:vimirc_user')
       if !strlen(s:user)
 	let s:user = expand('$USER')
 	if s:user ==# '$USER'
@@ -169,7 +168,7 @@ function! s:ObtainUserInfo(args)
     let s:realname = s:StrMatched(a:args,
 	  \"--real\\%(name\\)\\==\\(['\"]\\)\\(.\\{-\\}\\)\\1", '\2')
     if !strlen(s:realname)
-      let s:realname = s:GetVimVar('g:plugin_vimirc_realname')
+      let s:realname = s:GetVimVar('g:vimirc_realname')
       if !strlen(s:realname)
 	let s:realname = expand('$NAME')
 	if s:realname ==# '$NAME'
@@ -183,7 +182,7 @@ function! s:ObtainUserInfo(args)
 
     let s:umode = s:StrMatched(a:args, '-m\s*\(\S\+\)', '\1')
     if !strlen(s:umode)
-      let s:umode = s:GetVimVar('g:plugin_vimirc_umode')
+      let s:umode = s:GetVimVar('g:vimirc_umode')
       if !strlen(s:umode)
 	let s:umode = expand('$IRCUMODE')
 	if s:umode ==# '$IRCUMODE'
@@ -197,7 +196,7 @@ function! s:ObtainUserInfo(args)
   if retval
     let s:server = s:StrMatched(a:args, '-s\s*\(\S\+\)', '\1')
     if !strlen(s:server)
-      let s:server = s:GetVimVar('g:plugin_vimirc_server')
+      let s:server = s:GetVimVar('g:vimirc_server')
       if !strlen(s:server)
 	let s:server = 'irc.freenode.net:6667'
       endif
@@ -228,13 +227,12 @@ function! s:InitVars()
   " User options below
 
   " Set your favorite farewell message
-  let s:partmsg = s:GetVimVar('g:plugin_vimirc_partmsg')
+  let s:partmsg = s:GetVimVar('g:vimirc_partmsg')
   if !strlen(s:partmsg)
     let s:partmsg = (s:debug ? 'Testing ' : '').s:client.' (IRC client for Vim)'
   endif
   " Prepend a leading colon
   let s:partmsg = substitute(s:partmsg, '^[^:]', ':&', '')
-
 endfunction
 
 function! s:SetGlobVars()
@@ -252,7 +250,7 @@ function! s:SetGlobVars()
   let s:winminheight = &winminheight
   set winminheight=1
   let s:winwidth = &winwidth
-  set winwidth=10
+  set winwidth=12
 endfunction
 
 function! s:ResetGlobVars()
@@ -325,7 +323,7 @@ endfunction
 function! s:UndoAutocmds()
   augroup VimIRC
     autocmd! CursorHold
-    "autocmd! BufLeave
+    "autocmd! BufHidden
   augroup END
 endfunction
 
@@ -334,13 +332,13 @@ function! s:MainLoop()
     return
   endif
 
+  " Clearing the vim command line
   echo ""
   " TODO: I really want to write this loop in perl, but how could I detect
   " interrupt then?
   while 1
     try
       let key = getchar(0)
-      " FIXME: Hitting <C-Tab> or something might raise E132
       if ''.key != '0'
 	call s:HandleKey(key)
 	continue
@@ -351,6 +349,10 @@ function! s:MainLoop()
     catch /^IMGONNA/
       " Get out of the loop
       " NOTE: You cannot see new messages posted while posting
+      if v:exception =~# 'POST$' && mode() !=# 'i'
+	" FIXME: Sometimes "startinsert" in OpenBuf_Command doesn't seem to work
+	startinsert
+      endif
       break
     catch /^Vim:Interrupt$/
       match none
@@ -522,7 +524,7 @@ endfunction
 
 function! s:OpenBuf_Names(channel)
   let bufnum  = s:GetBufNum_Names(a:channel)
-  let command = 'vertical belowright 11split'
+  let command = 'vertical belowright 12split'
   call s:SelectWindow(s:GetBufNum_Channel(a:channel))
   if bufnum >= 0
     if s:SelectWindow(bufnum) < 0
@@ -546,7 +548,14 @@ function! s:OpenBuf_Command()
 
   let channel = s:GetVimVar('b:channel')
   let bufnum  = s:GetBufNum_Command(channel)
-  let command = 'botright 1split'
+  " TODO: I think I should make it configurable where to open
+  if 0
+    let command = 'botright 1split'
+  else
+    let command = 'belowright 1split'
+    call s:SelectWindow(s:GetBufNum_Channel(channel))
+  endif
+
   if bufnum >= 0
     if s:SelectWindow(bufnum) < 0
       call s:OpenBuf(command, '+'.bufnum.'buffer')
@@ -563,6 +572,7 @@ function! s:OpenBuf_Command()
     call append('$', '')
   endif
   $
+  " FIXME: Sometimes entering insert mode fails
   startinsert
 endfunction
 
@@ -684,18 +694,16 @@ function! s:InitBuf_Command(bufname, channel)
   let b:server	= s:server
   let b:channel = a:channel
   call s:DoSettings()
-  "setlocal bufhidden=delete
-  "setlocal winfixheight
-  setlocal nowrap
+  if 1
+    setlocal winfixheight
+  endif
+  setlocal wrap
   nnoremap <buffer> <silent> <CR> :call <SID>SendingCommand()<CR>
   inoremap <buffer> <silent> <CR> <Esc>:call <SID>SendingCommand()<CR>
   nunmap <buffer> i
   nunmap <buffer> I
-  " Do not allow opening a new line
-  nmap <buffer> o <Nop>
-  nmap <buffer> O <Nop>
-  " Joining lines either
-  nmap <buffer> J <Nop>
+  " Do not allow joining lines
+  "nmap <buffer> J <Nop>
   " TODO: gq stuffs
   call s:SetBufNum(a:bufname, bufnr('%'))
 endfunction
@@ -809,7 +817,15 @@ function! s:HandleKey(key)
   if char =~# '[:]'
     " TODO: How can we enter ex command mode from script?  Requires a new vim
     "	    command (startex or something)?
-    throw 'IMGONNAEX'
+    if 0
+      throw 'IMGONNAEX'
+    else
+      let comd = input(':')
+      if strlen(comd)
+	execute comd
+      endif
+      echo ""
+    endif
   elseif char =~# '[iI]'
     call s:OpenBuf_Command()
     throw 'IMGONNAPOST'
@@ -886,6 +902,7 @@ function! s:SendingCommand()
       let comd = toupper(substitute(line, rx, '\1', ''))
       let args = substitute(line, rx, '\2', '')
 
+      " Accept aliases
       if comd =~# '^\%(MSG\|QUERY\)$'
 	if comd ==# 'QUERY'
 	  " Just entering/quitting query mode, not sending.
@@ -906,6 +923,8 @@ function! s:SendingCommand()
       elseif comd =~# '^\%(ME\)$'
 	let comd = 'ACTION'
 	let args = (strlen(b:query) ? b:query : b:channel).' '.args
+      elseif comd ==# 'LEAVE'
+	let comd = 'PART'
       endif
 
       if strlen(args)
@@ -1242,21 +1261,22 @@ endfunction
 
 if has('perl')
 function! s:SetEncoding()
-  let encs = ''
-  if &encoding ==# 'cp932'
-    let encs = '7bit-jis'
+  " The idea is, we should load & use conversion-related codes only if
+  " necessary
+  let ircenc = ''
+  if &encoding =~# '\%(cp932\|euc-jp\)'
+    let ircenc = '7bit-jis'
   endif
-  if !strlen(encs)
+  if !strlen(ircenc)
     return
   endif
 
   perl <<EOP
 {
   use Encode;
-  use Encode::Guess;
 
-  $Encoding = VIM::Eval('&encoding');
-  Encode::Guess->set_suspects(split(/,/, scalar(VIM::Eval('l:encs'))));
+  $ENC_VIM = VIM::Eval('&encoding');
+  $ENC_IRC = VIM::Eval('l:ircenc');
 }
 EOP
 endfunction
@@ -1361,13 +1381,7 @@ function! s:Send_JOIN(comd, args)
 	  VIM::DoCommand("call s:OpenBuf_Channel(\"$chan\")");
 	  unless (get_channel($chan))	# not joined yet
 	    {
-	      my $cchan = $chan;
-	      if (1 && $Current_Server->{'encoding'})
-		{
-		  Encode::from_to($cchan, $Encoding,
-						$Current_Server->{'encoding'});
-		}
-	      send_msg("JOIN %s", $cchan);
+	      send_msg("JOIN %s", $chan);
 	      add_line($chan, "*: Now talking in $chan");
 	      if (VIM::Eval('!strlen(getline(1))'))
 		{
@@ -1438,6 +1452,22 @@ function! s:Send_PART(comd, args)
 EOP
 endfunction
 
+function! s:Send_PING(comd, args)
+  if !strlen(a:args)
+    return
+  endif
+
+  perl <<EOP
+{
+  my $comd = VIM::Eval('a:comd');
+  my $args = VIM::Eval('a:args');
+  my $time = VIM::Eval('localtime()');
+
+  send_ctcp(1, $args, \"$comd $time");
+}
+EOP
+endfunction
+
 function! s:Send_QUIT(comd, args)
   let mesg = strlen(a:args) ? a:args : s:partmsg
   let bufnum = s:GetBufNum_Server()
@@ -1483,17 +1513,25 @@ function! s:SendMessage(comd, args)
   if (my ($chan, $mesg) = (VIM::Eval('a:args') =~ /^(\S+) :(.+)$/))
     {
       send_msg("%s %s :%s", ($comd ? $comd : 'PRIVMSG'), $chan, $mesg);
-      unless (is_channel($chan))
+
+      my $nick = $Current_Server->{'nick'};
+      if (is_channel($chan))
 	{
-	  $chan = '';
-	}
-      if ($comd eq 'PRIVMSG')
-	{
-	  add_line($chan, "<$Current_Server->{'nick'}>: $mesg");
+	  my $nref = get_nicks($chan);
+	  $nick = get_nickprefix($nref->{$nick}).$nick;
 	}
       else
 	{
-	  add_line($chan, "[$Current_Server->{'nick'}]: $mesg");
+	  $chan = '';
+	}
+
+      if ($comd eq 'PRIVMSG')
+	{
+	  add_line($chan, "<$nick>: $mesg");
+	}
+      else
+	{
+	  add_line($chan, "[$nick]: $mesg");
 	}
     }
 }
@@ -1556,7 +1594,11 @@ function! s:Server(server)
     let port = substitute(server, rx, '\2', '')
     let server = substitute(server, rx, '\1', '')
   else
-    let port = s:Input('Specify port number', 6667)
+    if 0
+      let port = s:Input('Specify port number', 6667)
+    else
+      let port = 6667
+    endif
   endif
   if !(strlen(server) && strlen(port))
     return
@@ -1613,7 +1655,6 @@ function! s:Server(server)
 			    away      => 0,
 			    motd      => 0,
 			    chans     => undef,
-			    encode    => undef,
 			    lastbuf   => undef	};
 
       $Current_Server = $Srevres{$sock->peerhost()} = $Servers{$server};
@@ -1675,17 +1716,9 @@ function! s:RecvData()
 
       foreach my $line (@lines)
 	{
-	  if ($Encoding)
+	  if ($ENC_VIM && $ENC_IRC)
 	    {
-	      unless ($Current_Server->{'motd'} || $Current_Server->{'encode'})
-		{
-		  get_encode(\$line);
-		}
-	      if ($Current_Server->{'encode'})
-		{
-		  Encode::from_to($line, $Current_Server->{'encode'},
-								  $Encoding);
-		}
+	      Encode::from_to($line, $ENC_IRC, $ENC_VIM);
 	    }
 	  parse_line(\$line);
 	}
@@ -1728,10 +1761,10 @@ our $Current_Server;	# reference referring an element of %Servers
 our $From_Server;	# simple string value of the last sender's name@host
 our $Sockets;		# IO::Select object
 
-our $USER_CHOP		= 0x01;
-our $USER_VOICE		= 0x02;
+our $UMODE_CHOP		= 0x01;
+our $UMODE_VOICE	= 0x02;
 
-our $Encoding;
+our ($ENC_VIM, $ENC_IRC);
 
 sub vim_getvar
 {
@@ -1748,12 +1781,22 @@ sub vim_printf
 
 sub send_msg
 {
-  my $format = shift;
-  my $sock = $Current_Server->{'sock'};
+  my $format= shift;
+  my $comd  = shift;
+  my @args  = @_;
+  my $sock  = $Current_Server->{'sock'};
 
   if (defined($sock) && $sock->connected())
     {
-      printf($sock "$format\r\n", @_);
+      if ($ENC_VIM && $ENC_IRC)
+	{
+	  foreach my $arg (@args)
+	    {
+	      Encode::from_to($arg, $ENC_VIM, $ENC_IRC);
+	    }
+	}
+
+      printf($sock "$format\r\n", $comd, @args);
     }
 }
 
@@ -1784,17 +1827,6 @@ sub establish_connection
     }
 
   return $sock;
-}
-
-sub get_encode
-{
-  my $line  = shift;
-  my $encode= Encode::Guess->guess(${$line});
-
-  if (ref($encode) && $encode->name() !~ /^(?:ascii|utf8)$/)
-    {
-      $Current_Server->{'encode'} = $encode->name();
-    }
 }
 
 sub is_channel
@@ -1840,7 +1872,7 @@ sub send_ctcp
   send_msg("%s %s :\x01%s\x01", ($query ? 'PRIVMSG' : 'NOTICE'), $to, ${$mesg});
 }
 
-sub process_ctcp
+sub process_ctcp_query
 {
   my ($from, $pref, $chan, $mesg) = @_;
 
@@ -1879,6 +1911,28 @@ sub process_ctcp
 	}
     }
 
+  return length(${$mesg});
+}
+
+sub process_ctcp_reply
+{
+  my ($from, $pref, $chan, $mesg) = @_;
+
+  if (${$mesg} =~ s/\x01(.*?)\x01//)
+    {
+      if (my ($comd, $args) = ($1 =~ /^(\S+)(?:\s*(.+))?$/))
+	{
+	  if ($comd eq 'PING')
+	    {
+	      my $diff = scalar(VIM::Eval('localtime()')) - $args;
+	      add_line('', "[$pref$from($comd)]: $diff seconds delay");
+	    }
+	  else
+	    {
+	      add_line('', "[$pref$from($comd)]: $args");
+	    }
+	}
+    }
   return length(${$mesg});
 }
 
@@ -1922,11 +1976,11 @@ sub get_nickprefix
   my $mode = shift;
   my $pref = '';
 
-  if ($mode & $USER_CHOP)
+  if ($mode & $UMODE_CHOP)
     {
       $pref .= '@';
     }
-  if ($mode & $USER_VOICE)
+  if ($mode & $UMODE_VOICE)
     {
       $pref .= '+';
     }
@@ -1938,7 +1992,7 @@ sub add_nick
   my ($nick, $mode, $chan) = @_;
   my $cref = get_channel($chan);
 
-  if ($nick eq $Current_Server->{'nick'})
+  if (is_me($nick))
     {
       $cref->{'umode'} = $mode;
     }
@@ -2030,7 +2084,7 @@ sub parse_number
 
   if (0)
     {
-      vim_printf("from=%s comd=%s args=%s", $from, $comd, ${$args});
+      vim_printf("from=%s comd=%s args=\"%s\"", $from, $comd, ${$args});
     }
 
   if ($comd == 001)	# RPL_WELCOME
@@ -2104,6 +2158,10 @@ sub parse_number
 	{
 	  add_line('', "$nick using $server");
 	}
+    }
+  elsif ($comd == 315)	# RPL_ENDOFWHO
+    {
+      add_line('', $mesg);
     }
   elsif ($comd == 317)	# RPL_WHOISIDLE
     {
@@ -2196,6 +2254,12 @@ sub parse_number
 			  VIM::Eval("s:GetTime(0, $time)"));
 	}
     }
+  elsif ($comd == 352)	# RPL_WHOREPLY
+    {
+      my ($chan, $user, $host, $server, $nick, $flag, $hop, $real) =
+		($mesg =~ /^(\S+) (\S+) (\S+) (\S+) (\S+) (.*?) :(\d+) (.*)$/);
+      add_line('', "$chan $nick $flag $user\@$host ($real)");
+    }
   elsif ($comd == 353)	# RPL_NAMREPLY
     {
       my ($type, $chan, $nicks) = ($mesg =~ /^(.) (\S+) :(.*)$/);
@@ -2207,11 +2271,11 @@ sub parse_number
 	      my $mode = 0;
 	      if ($nick =~ s/^@//)
 		{
-		  $mode |= $USER_CHOP;
+		  $mode |= $UMODE_CHOP;
 		}
 	      if ($nick =~ s/^\+//)
 		{
-		  $mode |= $USER_VOICE;
+		  $mode |= $UMODE_VOICE;
 		}
 	      add_nick($nick, $mode, $chan);
 	    }
@@ -2248,9 +2312,8 @@ sub parse_number
       unless ($Current_Server->{'motd'})
 	{
 	  $Current_Server->{'motd'} = 1;
-	  # Auto-obtain the user mode string upon first connection, after
-	  # displaying MOTD
-	  send_msg("MODE %s", $Current_Server->{'nick'});
+	  send_msg("MODE %s %s", $Current_Server->{'nick'},
+						scalar(VIM::Eval('s:umode')));
 	}
     }
   elsif ($comd == 391)	# RPL_TIME
@@ -2314,7 +2377,7 @@ sub parse_mode
 {
   my ($from, $args) = @_;
 
-  if (my ($chan, $mode) = (${$args} =~ /^(\S+) :(.*?)\s*$/))
+  if (my ($chan, $mode) = (${$args} =~ /^(\S+) :?(.*?)\s*$/))
     {
       if (is_channel($chan))
 	{
@@ -2324,22 +2387,22 @@ sub parse_mode
 	  while ($mode =~ /([-+])(.)(?:\s+([^-+]\S+))?/g)
 	    {
 	      my $add = ($1 eq '+');
-	      my $nick;
-	      my $val;
+	      my $arg = $3;
+	      my ($nick, $val);
 
 	      for ($2)
 		{
 		  # TODO: Handle channel modes
 		  if (/o/i)
 		    {
-		      $nick = $3;
-		      $val  = $USER_CHOP;
+		      $nick = $arg;
+		      $val  = $UMODE_CHOP;
 		      last;
 		    }
 		  if (/v/)
 		    {
-		      $nick = $3;
-		      $val  = $USER_VOICE;
+		      $nick = $arg;
+		      $val  = $UMODE_VOICE;
 		      last;
 		    }
 		}
@@ -2398,9 +2461,10 @@ sub parse_nick
 
   if (my ($nick) = (${$args} =~ /^:(.*)$/))
     {
-      if (is_me($from))
+      if (is_me($nick))
 	{
 	  add_line('', "*: New nick $nick approved");
+	  send_msg("MODE %s", $nick);
 	}
       while (my $chan = each(%{$Current_Server->{'chans'}}))
 	{
@@ -2429,7 +2493,10 @@ sub parse_notice
 	{
 	  $chan = '';
 	}
-      add_line($chan, "[$pref$from]: $mesg");
+      if (process_ctcp_reply($from, $pref, $chan, \$mesg))
+	{
+	  add_line($chan, "[$pref$from]: $mesg");
+	}
     }
 }
 
@@ -2478,7 +2545,7 @@ sub parse_privmsg
 	  $chan = '';
 	}
       # Handle CTCP messages first
-      if (process_ctcp($from, $pref, $chan, \$mesg))
+      if (process_ctcp_query($from, $pref, $chan, \$mesg))
 	{
 	  add_line($chan, "<$pref$from>: $mesg");
 	}
