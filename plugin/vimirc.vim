@@ -1,12 +1,13 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
-" Created: Tue, 24 February 2004
-" Last Change: Thu, 01 Apr 2004 22:12:39 +0900 (JST)
+" Created: Tue, 24 Feb 2004
+" Last Change: Mon, 05 Apr 2004 21:18:41 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
 "   ircII		the basics of IRC
 "   X-Chat		ideas for DCC implementation specifically
+"   ERC			ideas for netsplit handling, auto-away feature etc.
 "   KoRoN		creator of a BBS viewer for Vim, Chalice (very popular
 "			among Japanese vim community)
 "   Ilya Sher		an idea for mini-buffers for cmdline editing
@@ -37,26 +38,24 @@
 "     let g:vimirc_nick		="nickname"
 "     let g:vimirc_user		="username"
 "     let g:vimirc_realname	="full name"
-"     let g:vimirc_umode	="user mode" set upon logon (e.g.: "+i")
-"     let g:vimirc_server	="your favorite IRC server"
-"				  in a format:
-"				    irc.foobar.com:6667
+"     let g:vimirc_server	="irc.foobar.com:6667"
+"				  Your favorite IRC server
 "				  (default: irc.freenode.net)
+"     let g:vimirc_umode	="user modes" set upon logon (e.g.: "+i")
 "
 "   Misc.:
-"     let g:vimirc_autojoin	="list of channels to join upon logon"
-"				  in either format:
 "
-"				    #chan1,#chan2
-"				    #chan1|#chan2@irc.foo.com,#chan3@irc.bar.com
+"     let g:vimirc_autojoin	="#chan1,#chan2"
+"				="#chan1|#chan2@irc.foo.com,#chan3@irc.bar.com"
 "
-"     let g:vimirc_nickpass	="list of passwords to identify yourself to
-"				  NickServ"
-"				  in either format:
+"				  List of channels to join upon logon
 "
-"				    pass@irc.foo.com
-"				    nick:pass@irc.foo.com
-"				    nick1:pass1|nick2:pass2@irc.foo.com
+"     let g:vimirc_nickpass	="pass@irc.foo.com"
+"				="nick:pass@irc.foo.com"
+"				="nick1:pass1|nick2:pass2@irc.foo.com"
+"
+"				  List of passwords to identify yourself to
+"				  NickServ.
 "
 "				  The first form can be used if you are using
 "				  the same pass for different nicks, or you
@@ -68,15 +67,24 @@
 "
 "     let g:vimirc_partmsg	="message sent with QUIT/PART"
 "
-"     let g:vimirc_winmode	="single" is the only valid value, which
-"				  just hinders opening up separate window for
-"				  each channel.
-"				  (default: multi-windows mode)
+"     let g:vimirc_winmode	="single" is the only valid value, which just
+"				  hinders opening up separate window for each
+"				  channel.  (default: multi-windows mode)
+"
+"   Auto-away feature:
+"     let g:vimirc_autoaway	=NUMBER
+"				  Set to non-zero to enable the feature.
+"				  (default: zero)
+"     let g:vimirc_autoawaytime	=NUMBER
+"				  Threshold time in seconds after which you
+"				  will be marked as `away'
+"				  (default: 1800 (30 minutes))
 "
 "   DCC-related:
 "     let g:vimirc_dccdir	="where files are downloaded"
 "				  (default: ~/.vimirc/dcc)
-"     let g:vimirc_dccport	=port-number to watch at when you set up
+"     let g:vimirc_dccport	=NUMBER
+"				  Port-number to watch at when you set up
 "				  a dcc server.  maybe necessary to set if you
 "				  are behind firewall or something.
 "
@@ -88,7 +96,7 @@
 "	-u username
 "	-s server:port
 "
-"	and
+"	Long option(s):
 "
 "	--realname="full name"
 "
@@ -96,8 +104,8 @@
 "   Type
 "     :VimIRC<CR>
 "
-"   You will be prompted for several user information if you have not set
-"   variables listed above.
+"   You will be prompted for several user information (nick etc.) if you have
+"   not set options listed above.
 "
 " Usage:
 "
@@ -142,8 +150,8 @@
 "   in the IRC command line to disconnect with the current server.
 "
 "   Or to totally exit from the script, type
-"     :VimIRCQuit<CR>
-"   in the VIM command line.
+"     VimIRCQuit<CR>
+"   on the VIM command line.
 "
 " TODOs:
 "   * multibyte support (done? I don't think so)
@@ -154,19 +162,29 @@
 "   * IPv6
 "   * command-line completion (with tab key)
 "   * scripting (?)
-"   * nicks auto-identification
-"   * control characters (bold, underline etc.)
-"   * help
-"   * menus
-"   * ctcp, including dcc stuffs (mostly done)
+"   * nicks auto-identification (done for freenode)
+"   * handling of control characters (bold, underline etc.)
+"   * help (both /help command and local help file)
+"   * menus (I personally never use menus)
 "   * etc. etc.
 "
 "   Done:
 "   - command-line history (?)
 "   - separate listing of channels with sorting facilities
 "   - netsplit detection (?)
-"   - auto reconnect/rejoin (?)
+"   - auto reconnect/rejoin
+"   - ctcp, including dcc stuffs (well, mostly)
+"   - timer (it hasn't been in todo list though)
+"     - auto-away
 "
+" Tips:
+"   1.	If you see extreme slowness in vim startup time due to this plugin,
+"	put "let loaded_vimirc=1" in your .vimrc to avoid loading this in
+"	normal editing sessions.  Create a VimIRC-dedicated rc file (.vimircrc
+"	or something) and put necessary settings into it.  Then set up an
+"	alias (shortcut) which runs VimIRC, specifying the rc file you
+"	created.  Like this:
+"	  alias irc='gvim -i NONE -u ~/.vimircrc -c VimIRC'
 
 if exists('g:loaded_vimirc') || &compatible
   finish
@@ -175,7 +193,7 @@ endif
 let s:save_cpoptions = &cpoptions
 set cpoptions&
 
-let s:version = '0.6.7'
+let s:version = '0.7'
 let s:client  = 'VimIRC '.s:version
 " Set this to zero when releasing, which I'll occasionally forget, for sure
 let s:debug = 0
@@ -187,6 +205,20 @@ endif
 "
 " Developing functions
 "
+
+function! s:SetLastActive()
+  if !s:autoaway
+    return
+  endif
+
+  let lastactive = s:lastactive
+  let s:lastactive = localtime()
+  " Clear the `away' status only if considered to be set
+  if s:lastactive - lastactive > s:autoawaytime
+    " I just don't want to call this perl code every time you type something
+    call s:Send_GAWAY('GAWAY', '')
+  endif
+endfunction
 
 " Handle "/SET option value"
 function! s:SetVarCmd(varval)
@@ -279,7 +311,7 @@ function! s:ObtainUserInfo(args)
 endfunction
 
 function! s:InitVars()
-  if exists('s:bufname_prefix') " already inited
+  if exists('s:sid') " already inited
     return
   endif
 
@@ -294,6 +326,11 @@ function! s:InitVars()
   let s:bufname_nicks	= s:bufname_prefix.'NICKS_'
   let s:bufname_command = s:bufname_prefix.'COMMAND_'
   let s:bufname_chat	= s:bufname_prefix.'CHAT_'
+
+  " When timer was last triggered
+  let s:lasttime = localtime()
+  " When user did some action most recently
+  let s:lastactive = s:lasttime
 
   " User options below
 
@@ -320,6 +357,13 @@ function! s:InitVars()
   " Window mode
   call s:SetVarIntern('vimirc_winmode')
   "call s:SetVarIntern('vimirc_nickwin')
+
+  call s:SetVarIntern('vimirc_autoaway', 0)
+  " Threshold time to be set `away'.  MUST be in seconds
+  call s:SetVarIntern('vimirc_autoawaytime')
+  if (s:autoawaytime + 0) <= 0
+    let s:autoawaytime = 60 * 30
+  endif
 endfunction
 
 " Internalize user variables (for safety)
@@ -342,6 +386,7 @@ function! s:SetGlobVars()
   let s:equalalways = &equalalways
   set equalalways
   let s:lazyredraw = &lazyredraw
+  "set nolazyredraw
   set lazyredraw
   let s:showbreak = &showbreak
   let &showbreak = '      '
@@ -444,6 +489,7 @@ function! s:MainLoop()
       if !s:RecvData()
 	break
       endif
+      call s:DoTimer()
     catch /^IMGONNA/
       " Get out of the loop
       " NOTE: You cannot see new messages posted while posting
@@ -694,16 +740,6 @@ function! s:OpenBuf_Command()
   let chattin = strlen(channel) && !s:IsChannel(channel)
   let bufnum  = s:GetBufNum_Command(channel)
 
-  if 0 && (!(chattin || bufnum == bufnr('%')) && strlen(channel))
-    let query = getbufvar(bufnum, 'query')
-    " Meaning, user hit i/I in a channel window, but the corresponding command
-    " window was in use as a query window
-    if strlen(query) && s:GetConf_YN("Are you going to post to the channel?".
-	  \" not to ".query."?")
-      call setbufvar(bufnum, 'query', '')
-    endif
-  endif
-
   " TODO: I think I should make it configurable where to open
   if 0
     let comd = 'botright 1split'
@@ -883,8 +919,8 @@ function! s:InitBuf_Command(bufname, channel)
   let b:server	= s:server
   let b:channel = a:channel
   call s:DoSettings()
-  nnoremap <buffer> <silent> <CR> :call <SID>Send(0)<CR>
-  inoremap <buffer> <silent> <CR> <Esc>:call <SID>Send(0)<CR>
+  nnoremap <buffer> <silent> <CR> :call <SID>SendLine(0)<CR>
+  inoremap <buffer> <silent> <CR> <Esc>:call <SID>SendLine(0)<CR>
   nunmap <buffer> i
   nunmap <buffer> I
   " TODO: Forbid gq stuffs
@@ -946,7 +982,6 @@ function! s:CloseChannel(channel)
     endwhile
   endif
   call s:CloseNicks(a:channel)
-  redraw
 endfunction
 
 function! s:CloseNicks(channel)
@@ -999,10 +1034,9 @@ function! s:CloseCommand(force)
       " triggered.
       if strlen(s:channel)
 	call s:VisitChannel(s:channel)
-	call s:HiliteLine('.')
       endif
+      call s:HiliteLine('.')
     endif
-    redraw
   endif
 endfunction
 
@@ -1033,7 +1067,6 @@ function! s:CloseChat(nick, server)
   endif
 
   let s:server = save_server
-  redraw
 endfunction
 
 function! s:CloseVimIRC()
@@ -1062,13 +1095,10 @@ endfunction
 function! s:HandleKey(key)
   let char   = nr2char(a:key)
   let oldwin = winnr()
-  "let column = (char =~# '[#*/?BNWbhlnw]')
 
   match none
   " TODO: Make some mappings user-configurable
   if char =~# '[:]'
-    " TODO: How can we enter ex command mode from script?  Requires a new vim
-    "	    command (startex or something)?
     if 0
       throw 'IMGONNAEX'
     else
@@ -1077,29 +1107,35 @@ function! s:HandleKey(key)
 	execute comd
       endif
     endif
-  elseif char =~# '[iI]'
-    call s:OpenBuf_Command()
-    throw 'IMGONNAPOST'
-  elseif char =~# '[aA]'
+  elseif char =~# '[Oo]' && s:IsBufList()
+    call s:Sort{char ==# 'o' ? 'Select' : 'Reverse'}()
+  elseif char =~# '[AIOaio]'
     if s:IsBufCommand()
-      startinsert!
-      throw 'IMGONNAPOST'
+      if char ==? 'a'
+	startinsert!
+      else
+	if char ==? 'o'
+	  execute 'normal!' char
+	elseif char ==# 'I'
+	  normal! ^
+	endif
+	startinsert
+      endif
+    else
+      call s:OpenBuf_Command()
     endif
+    throw 'IMGONNAPOST'
   elseif char =~# '[/?]'
     call s:SearchWord(char)
   elseif char == "\<CR>"
     if s:IsBufCommand()
-      call s:Send(1)
+      call s:SendLine(1)
     elseif s:IsBufList()
       call s:JoinChannel()
     elseif s:IsBufNicks()
       call s:SelectNickCmd(1)
     else
       execute 'normal!' char
-    endif
-  elseif char =~# '[oO]'
-    if s:IsBufList()
-      call s:Sort{char ==# 'o' ? 'Select' : 'Reverse'}()
     endif
   elseif char =~# '[p]'	" scroll backward
     execute 'normal!' nr2char(2)
@@ -1134,19 +1170,12 @@ function! s:HandleKey(key)
   " Discard excessive keytypes (Chalice)
   while getchar(0)|endwhile
 
-  if winnr() != oldwin
-    call s:UpdateTitleBar()
-  endif
-  if 0
-    " FIXME: Doppelgaenger issue with s:HiliteColumn()
-    call s:Hilite{column ? 'Column' : 'Line'}('.')
-  else
-    call s:HiliteColumn('.')
-  endif
+  call s:HiliteColumn('.')
+  call s:SetLastActive()
   echon "\r"|redraw
 endfunction
 
-function! s:Send(loop)
+function! s:SendLine(loop)
   " TODO: Do confirmation (preferably optionally)
   if !s:IsBufCommand()
     return
@@ -1182,11 +1211,13 @@ function! s:Send(loop)
 	  endif
 	endif
 	let comd = 'PRIVMSG'
-      elseif comd ==# 'ME'
+      elseif comd =~# '^\%(ME\)$'
 	let comd = 'ACTION'
 	let args = (strlen(b:query) ? b:query : b:channel).' '.args
       elseif comd =~# '^\%(LEAVE\)$'
 	let comd = 'PART'
+      elseif comd ==# 'NICKS'
+	let comd = 'NAMES'
       endif
 
       if strlen(args)
@@ -1226,13 +1257,6 @@ function! s:Send(loop)
 	endif
       endif
 
-      if 0 && comd =~# '^\%(NAMES\)$'
-	" When receiving a bunch of lines, visit the server window beforehand:
-	" avoid the flicker caused by cursor movement between server and
-	" channel windows
-	call s:VisitServer()
-      endif
-
       if comd ==# 'SET'
 	call s:SetVarCmd(args)
       elseif comd ==# 'HELP'
@@ -1257,11 +1281,20 @@ function! s:Send(loop)
 
   call s:CloseCommand(0) " might have already been closed before we reach here
   unlet! s:channel
+
+  if comd =~# '^\%(WHO\)$'
+    " When receiving a bunch of lines, visit the server window beforehand:
+    " avoid the flicker caused by cursor movement between server and
+    " channel windows
+    call s:VisitServer()
+  endif
+
   if comd !=# 'AWAY'  " don't scroll down when awaying, to keep the context
     call s:ExecuteSafe('keepjumps', 'normal! Gzb')
     redraw
   endif
 
+  call s:SetLastActive()
   if !a:loop
     call s:MainLoop()
   endif
@@ -1284,24 +1317,10 @@ function! s:JoinChannel()
 endfunction
 
 function! s:StartQuery(nick)
-  " TODO: Open up a separate window as with DCC CHAT?
-  if 1
-    call s:CloseCommand(0)
-    call s:OpenBuf_Chat(a:nick, s:server)
-    call s:OpenBuf_Command()
-  else
-    if !s:IsBufCommand()
-      call s:OpenBuf_Command()
-    else
-      if strlen(getline('$'))
-	call append('$', '')
-      endif
-      $
-      startinsert
-    endif
-    let b:query = a:nick
-    call s:SetCommandMode(b:channel)
-  endif
+  " Open up a separate window as with DCC CHAT
+  call s:CloseCommand(0)
+  call s:OpenBuf_Chat(a:nick, s:server)
+  call s:OpenBuf_Command()
 endfunction
 
 function! s:SelectNickCmd(loop) range
@@ -1352,15 +1371,8 @@ function! s:SelectNickCmd(loop) range
 
     let onoff = (choice % 2) ? '+' : '-'
     let mode  = choice >= 3 ? 'v' : 'o'
-    let modes = mode
+    let modes = s:StrMultiply(mode, nnick)
 
-    if nnick > 1
-      let i = 1
-      while i < nnick
-	let modes = modes.mode
-	let i = i + 1
-      endwhile
-    endif
     call s:DoSend('MODE', b:channel.' '.onoff.modes.' '.nicks)
   elseif choice == 4
     let comds = "&send\n&chat"
@@ -1402,8 +1414,6 @@ function! s:NotifyNewEntry(...)
     " And if not, do not scroll.  User might want to stay there to read old
     " messages
     call s:Beep(1)
-    " Show the correct line number
-    call s:RedrawStatus()
   endif
 endfunction
 
@@ -1415,11 +1425,10 @@ function! s:OfflineMsg()
 endfunction
 
 function! s:UpdateTitleBar()
-  let &titlestring = s:client.': '.(s:IsBufIRC()
-	\			    ? b:server.' '.(s:IsBufChannel()
-	\					    ? b:channel.': '.b:topic
-	\					    : '')
-	\			    : fnamemodify(expand('%'), ':p'))
+  let &titlestring = s:client." [".strftime('%H:%M').']: '.
+	\(s:IsBufIRC()	? b:server.' '.(s:IsBufChannel()
+	\				? b:channel.': '.b:topic : '')
+	\		: fnamemodify(expand('%'), ':p'))
 endfunction
 
 function! s:GetStatus()
@@ -1432,8 +1441,6 @@ function! s:SetUserMode(umode)
     call setbufvar(bufnum, 'umode', a:umode)
     call setbufvar(bufnum, 'title', '  '.s:GetCurNick().
 	  \' [+'.a:umode.'] @ '.s:server)
-    call s:RedrawStatus(1)
-    call s:UpdateTitleBar()
   endif
 endfunction
 
@@ -1441,7 +1448,6 @@ function! s:SetChannelTopic(channel, topic)
   let bufnum = s:GetBufNum_Channel(a:channel)
   if bufnum >= 0
     call setbufvar(bufnum, 'topic', a:topic)
-    call s:UpdateTitleBar()
   endif
 endfunction
 
@@ -1450,7 +1456,6 @@ function! s:SetChannelMode(channel, cmode)
   if bufnum >= 0
     call setbufvar(bufnum, 'cmode', a:cmode)
     call setbufvar(bufnum, 'title', '  '.a:channel." [".a:cmode.'] @ '.s:server)
-    call s:RedrawStatus(1)
   endif
 endfunction
 
@@ -1462,7 +1467,6 @@ function! s:SetCommandMode(channel)
 	  \				  ? 'Querying '.query
 	  \				  : 'Posting to '.
 	  \(strlen(a:channel) ? a:channel.' @ ' : '').s:server))
-    call s:RedrawStatus()
   endif
 endfunction
 
@@ -1552,9 +1556,10 @@ function! s:GetTime(short, ...)
 	\				    (a:0 && a:1 ? a:1 : localtime()))
 endfunction
 
-function! s:RedrawStatus(...)
+function! s:UpdateStatus(...)
   if exists(':redrawstatus')
-    execute 'redrawstatus'.(a:0 && a:1 ? '!' : '')
+    "execute 'redrawstatus'.(a:0 && a:1 ? '!' : '')
+    redrawstatus!
   endif
 endfunction
 
@@ -1612,6 +1617,16 @@ function! s:StrCompress(str)
   return substitute(s:StrTrim(a:str), '\s\{2,\}', ' ', 'g')
 endfunction
 
+function! s:StrMultiply(str, times)
+  let str = a:str
+  let i = 1
+  while i < a:times
+    let str = str.a:str
+    let i = i + 1
+  endwhile
+  return str
+endfunction
+
 function! s:BufClear()
   silent %delete _
 endfunction
@@ -1651,7 +1666,7 @@ function! s:PrintHelp()
     echo "/msg target message"
     echo "\tSend a message to a nick/channel."
     echo "message"
-    echo "\tSend a message to the current channel or the user currently"
+    echo "\tSend a message to the current channel or query user currently"
     echo "\tquerying with."
     echo "\n"
     echo "/query nick"
@@ -1802,6 +1817,28 @@ function! s:SortList(cmp, dir)
 EOP
 endfunction
 
+function! s:DoTimer()
+  let lasttime = localtime()
+  if lasttime <= s:lasttime
+    return
+  endif
+
+  perl <<EOP
+{
+  my $time = VIM::Eval('l:lasttime');
+  my $save_cur = $Current_Server;
+
+  do_timer($time);
+
+  $Current_Server = $save_cur;
+}
+EOP
+
+  let s:lasttime = lasttime
+  call s:UpdateTitleBar()
+  call s:UpdateStatus()
+endfunction
+
 function! s:Send_ACTION(comd, args)
   perl <<EOP
 {
@@ -1835,18 +1872,73 @@ function! s:Send_ACTION(comd, args)
 EOP
 endfunction
 
+function! s:Send_GAWAY(comd, args)
+  perl <<EOP
+{
+  my $comd = 'AWAY';
+  my $away = VIM::Eval('a:args');
+  my $save_cur = $Current_Server;
+
+  foreach my $server (@Servers)
+    {
+      if ($server->{'conn'} & $CS_LOGIN)
+	{
+	  $Current_Server = $server;
+
+	  if ($away)
+	    {
+	      $server->{'away'} = $away;
+	      irc_send("%s :%s", $comd, $away);
+	    }
+	  elsif ($server->{'away'})
+	    {
+	      $server->{'away'} = undef;
+	      irc_send("%s", $comd);
+	    }
+	}
+    }
+
+  $Current_Server = $save_cur;
+}
+EOP
+endfunction
+
 function! s:Send_AWAY(comd, args)
   perl <<EOP
 {
-  if (my $mesg = (VIM::Eval('a:args') =~ /^:(.+)$/))
+  my $comd = VIM::Eval('a:comd');
+
+  if (my ($mesg) = (VIM::Eval('a:args') =~ /^:(.+)$/))
     {
       $Current_Server->{'away'} = $mesg;
-      irc_send("AWAY :%s", $mesg);
+      irc_send("%s :%s", $comd, $mesg);
     }
-  else
+  elsif ($Current_Server->{'away'})
     {
       $Current_Server->{'away'} = undef;
-      irc_send("AWAY");
+      irc_send("%s", $comd);
+    }
+}
+EOP
+endfunction
+
+function! s:Send_CTCP(comd, args)
+  perl <<EOP
+{
+  if (my ($to, $comd, $args) = (VIM::Eval('a:args')
+					    =~ /^(\S+)\s+(\S+)(?:\s+(.+))?$/))
+    {
+      $comd = uc($comd);
+
+      if ($comd eq 'PING')
+	{
+	  $args = time();
+	}
+
+      unless (is_channel($to))	# sending ctcp to channel is rude
+	{
+	  ctcp_send(1, $to, "%s%s", $comd, ($args ? " $args" : ""));
+	}
     }
 }
 EOP
@@ -2114,13 +2206,12 @@ function! s:Send_PART(comd, args)
   perl <<EOP
 {
   my ($chans, $mesg) = (VIM::Eval('l:args') =~ /^(\S+)(?: (.+))?$/);
-  my $fmt = "PART %s".($mesg ? " %s" : "");
 
   foreach my $chan (split(/,/, $chans))
     {
       if (is_channel($chan))
 	{
-	  irc_send($fmt, $chan, $mesg);
+	  irc_send("PART %s%s", $chan, ($mesg ? " $mesg" : ""));
 	}
     }
 }
@@ -2136,7 +2227,7 @@ function! s:Send_PING(comd, args)
 {
   ctcp_send(1, scalar(VIM::Eval('a:args')), "%s %d",
 					    scalar(VIM::Eval('a:comd')),
-					    scalar(VIM::Eval('localtime()')));
+					    time());
 }
 EOP
 endfunction
@@ -2156,7 +2247,7 @@ function! s:Send_QUIT(comd, args)
 
   foreach my $cref (@{$Current_Server->{'chans'}})
     {
-      VIM::DoCommand('call s:CloseChannel("'.do_escape($cref->{'cname'}).'")')
+      VIM::DoCommand('call s:CloseChannel("'.do_escape($cref->{'name'}).'")')
     }
 
   $Current_Server->{'conn'} |= $CS_QUIT;
@@ -2248,19 +2339,21 @@ EOP
 endfunction
 
 function! s:GetCurNick()
-  " Enabling to hold different nicks across servers
-  let nick = s:GetVimVar('s:nick_'.s:server)
-  if !strlen(nick)
-    let nick = s:nick
-  endif
-  return nick
-endfunction
-
-function! s:SetCurNick(nick)
-  let s:nick_{s:server} = a:nick
   perl <<EOP
 {
-  $Current_Server->{'nick'} = VIM::Eval('a:nick');
+  my $nick;
+
+  if (exists($Current_Server->{'nick'}))
+    {
+      $nick = $Current_Server->{'nick'};
+    }
+  else
+    {
+      $nick = vim_getvar('s:nick');
+    }
+  $nick = do_escape($nick);
+
+  VIM::DoCommand("return \"$nick\"");
 }
 EOP
 endfunction
@@ -2440,7 +2533,6 @@ our %Clients;		# clients connected over dcc protocol
 our ($RS, $WS);		# IO::Select object
 
 our $From_Server;	# simple string value of the last sender's name@host
-			# well, not used.  and should be renamed
 
 #our %OPTS;
 our ($ENC_VIM, $ENC_IRC);
@@ -2452,18 +2544,21 @@ our $CS_QUIT  = 0x04;	# user "/QUIT"ted
 
 sub add_server
 {
-  my $server = {  server  => undef,
-		  port	  => 0,
-		  local	  => undef,
-		  sock	  => undef,
-		  conn	  => 0,
-		  nick	  => undef,
-		  pass	  => undef,
-		  umode	  => undef,
-		  away	  => undef,
-		  motd	  => 0,
-		  chans	  => [],
-		  lastbuf => undef };
+  my $server =	{ server    => undef,
+		  port	    => 0,
+		  local	    => undef,
+		  sock	    => undef,
+		  conn	    => 0,
+		  nick	    => undef,
+		  pass	    => undef,
+		  umode	    => undef,
+		  away	    => undef,
+		  motd	    => 0,
+		  chans	    => [],
+		  timers    => [],
+		  lastping  => time(),
+		  lastbuf   => undef
+		};
 
   unshift(@Servers, $server);
   return $server;
@@ -2565,34 +2660,22 @@ sub post_login_server
       irc_send("AWAY :%s", $server->{'away'});
     }
 
-  # Re-join channels
   if (@{$server->{'chans'}})
     {
+      # Re-join channels
       foreach my $cref (@{$server->{'chans'}})
 	{
-	  irc_send("JOIN %s%s", $cref->{'cname'}, ($cref->{'key'}
-						    ? " $cref->{'key'}" : ""));
+	  my $args = [ "JOIN %s%s", $cref->{'name'}, $cref->{'key'}
+						      ? " $cref->{'key'}"
+						      : "" ];
+	  add_timer(2, \&irc_send, $args);
 	}
     }
   else
     {
-      autojoin_channels();
-    }
-}
-
-sub autojoin_channels
-{
-  if (my $autojoin = vim_getvar('g:vimirc_autojoin'))
-    {
-      if (my ($chans) = ($autojoin =~ /([^,]+)\@$Current_Server->{'server'}/))
-	{
-	  $chans =~ s/\|(?=[&#+!])/,/g;
-	  VIM::DoCommand('call s:Send_JOIN("JOIN", "'.do_escape($chans).'")');
-	}
-      else
-	{
-	  VIM::DoCommand("call s:Send_JOIN('JOIN', g:vimirc_autojoin)");
-	}
+      # Wait 2 seconds so that you join channels (hopefully) after
+      # auto-identifying the nick
+      add_timer(2, \&do_auto_join);
     }
 }
 
@@ -2807,15 +2890,109 @@ sub irc_send
   syswrite($Current_Server->{'sock'}, sprintf("$fmt\x0D\x0A", @args));
 }
 
-sub is_channel
+#
+# Timer
+#
+
+sub add_timer
 {
-  # This might not be enough
-  return (shift =~ /^[&#+!]/);
+  my ($secs, $func, $args) = @_;
+  my $timer = { time => time() + $secs,
+		func => $func,
+		args => $args,
+		done => 0
+	      };
+
+  push(@{$Current_Server->{'timers'}}, $timer);
 }
 
-sub is_me
+sub del_timer
 {
-  return (shift eq $Current_Server->{'nick'});
+  foreach my $server (@Servers)
+    {
+      for (my $i = 0; $i <= $#{$server->{'timers'}}; $i++)
+	{
+	  if ($server->{'timers'}->[$i]->{'done'})
+	    {
+	      splice(@{$server->{'timers'}}, $i--, 1);
+	    }
+	}
+    }
+}
+
+sub do_timer
+{
+  my $time = shift;
+  my $did  = 0;
+
+  foreach my $server (@Servers)
+    {
+      if ($server->{'conn'} & $CS_LOGIN)
+	{
+	  # $Current_Server has to be restored by the caller
+	  $Current_Server = $server;
+
+	  do_auto_ping($server, $time);
+	  do_auto_away($server, $time);
+
+	  foreach my $timer (@{$server->{'timers'}})
+	    {
+	      if ($timer->{'time'} >= $time)
+		{
+		  $timer->{'func'}(@{$timer->{'args'}});
+		  $timer->{'done'} = 1;
+		  $did++;
+		}
+	    }
+	}
+    }
+
+  if ($did)
+    {
+      del_timer();
+    }
+}
+
+sub do_auto_away
+{
+  my ($server, $time) = @_;
+
+  if (vim_getvar('s:autoaway') && !$server->{'away'}
+      && $time - vim_getvar('s:lastactive') > vim_getvar('s:autoawaytime'))
+    {
+      irc_add_line('', "*: Auto-awaying...");
+      $server->{'away'} = sprintf("I think I'm gone (been idle since %s).",
+			      scalar(VIM::Eval('s:GetTime(0, s:lastactive)')));
+      irc_send("AWAY :%s", $server->{'away'});
+    }
+}
+
+# Play ping-pong with servers to keep connected
+sub do_auto_ping
+{
+  my ($server, $time) = @_;
+
+  if ($time - $server->{'lastping'} >= 90)
+    {
+      irc_send("PING %d", $time);
+      $server->{'lastping'} = $time;
+    }
+}
+
+sub do_auto_join
+{
+  if (my $autojoin = vim_getvar('g:vimirc_autojoin'))
+    {
+      if (my ($chans) = ($autojoin =~ /([^,]+)\@$Current_Server->{'server'}/))
+	{
+	  $chans =~ s/\|(?=[&#+!])/,/g;
+	  VIM::DoCommand('call s:Send_JOIN("JOIN", "'.do_escape($chans).'")');
+	}
+      else
+	{
+	  VIM::DoCommand("call s:Send_JOIN('JOIN', g:vimirc_autojoin)");
+	}
+    }
 }
 
 #
@@ -2851,6 +3028,78 @@ sub ctcp_send
 							  sprintf(shift, @_));
 }
 
+sub ctcp_query_action
+{
+  my ($from, $pref, $chan, $mesg) = @_;
+
+  if (is_channel($chan))
+    {
+      irc_add_line($chan, "*%s%s*: %s", $pref, $from, ${$mesg});
+    }
+  elsif (is_me($chan))
+    {
+      irc_chat_line($from, "*%s*: %s", $from, ${$mesg});
+      vim_beep(1);
+    }
+}
+
+sub ctcp_query_clientinfo
+{
+  my ($from, $comd, $args) = @_;
+  our %info;
+
+  unless (defined(%info))
+    {
+      %info = (
+	     CLIENTINFO => 'gives information about available CTCP commands',
+		ECHO	=> 'returns arguments you send',
+		PING	=> 'returns arguments you send',
+		TIME	=> 'tells you the time on my side',
+		VERSION => 'shows client type and version'
+	      );
+    }
+
+  unless ($args)
+    {
+      ctcp_send(0, $from, "%s %s. Use %s <COMMAND> to get more specific
+			\ information", $comd, join(' ', keys(%info)), $comd);
+    }
+  else
+    {
+      $args = uc($args);
+
+      if (exists($info{$args}))
+	{
+	  ctcp_send(0, $from, "%s %s", $comd, $info{$args});
+	}
+      else
+	{
+	  ctcp_send(0, $from, "%s No such function implemented: %s",
+								$comd, $args);
+	}
+    }
+}
+
+sub ctcp_query_echo
+{
+  ctcp_send(0, shift, "%s %s", shift, shift);
+}
+
+sub ctcp_query_ping
+{
+  ctcp_send(0, shift, "%s %s", shift, shift);
+}
+
+sub ctcp_query_time
+{
+  ctcp_send(0, shift, "%s :%s", shift, scalar(VIM::Eval('s:GetTime(0)')));
+}
+
+sub ctcp_query_version
+{
+  ctcp_send(0, shift, "%s :%s", shift, vim_getvar('s:client'));
+}
+
 sub process_ctcp_query
 {
   my ($from, $pref, $chan, $mesg) = @_;
@@ -2858,7 +3107,7 @@ sub process_ctcp_query
   while (${$mesg} =~ s/\x01(.*?)\x01//)
     {
       # TODO: flood-protection codes here
-      if (my ($comd, $args) = ($1 =~ /^(\S+)(?:\s*(.+))?$/))
+      if (my ($comd, $args) = ($1 =~ /^(\S+)(?:\s+(.+))?$/))
 	{
 	  if ($comd eq 'DCC')
 	    {
@@ -2869,40 +3118,27 @@ sub process_ctcp_query
 	    }
 	  elsif ($comd eq 'ACTION')
 	    {
-	      if (is_channel($chan))
+	      ctcp_query_action($from, $pref, $chan, \$args);
+	    }
+	  else
+	    {
+	      my $func = 'ctcp_query_'.lc($comd);
+
+	      irc_add_line($chan, "?%s%s(CTCP)?: %s %s", $pref, $from, $comd,
+									$args);
+
+	      if (defined(&{$func}))
 		{
-		  irc_add_line($chan, "*%s%s*: %s", $pref, $from, $args);
+		  &{$func}($from, $comd, $args);
 		}
 	      else
 		{
 		  if (is_me($chan))
 		    {
-		      irc_chat_line($from, "*%s*: %s", $from, $args);
+		      ctcp_send(0, $from, "ERRMSG %s: unknown query", $comd);
 		    }
-		}
-	    }
-	  else
-	    {
-	      irc_add_line($chan, "?%s%s?: %s %s", $pref, $from, $comd, $args);
-
-	      if ($comd eq 'ECHO' || $comd eq 'PING')
-		{
-		  ctcp_send(0, $from, "%s %s", $comd, $args);
-		}
-	      elsif ($comd eq 'TIME')
-		{
-		  my $time = VIM::Eval('s:GetTime(0)');
-		  ctcp_send(0, $from, "%s :%d", $comd, $time);
-		}
-	      elsif ($comd eq 'VERSION')
-		{
-		  my $client = VIM::Eval('s:client');
-		  ctcp_send(0, $from, "%s :%s", $comd, $client);
-		}
-	      else
-		{
-		  # TODO:
-		  ctcp_send(0, $from, "ERRMSG %s :unknown query", $comd);
+		  irc_add_line('', "!: CTCP query from %s unprocessed: %s",
+								$from, $comd);
 		}
 	    }
 	}
@@ -2913,11 +3149,11 @@ sub process_ctcp_query
 
 sub process_ctcp_reply
 {
-  my ($from, $pref, $chan, $mesg) = @_;
+  my ($from, $chan, $mesg) = @_;
 
   if (${$mesg} =~ s/\x01(.*?)\x01//)
     {
-      if (my ($comd, $args) = ($1 =~ /^(\S+)(?:\s*(.+))?$/))
+      if (my ($comd, $args) = ($1 =~ /^(\S+)(?:\s+(.+))?$/))
 	{
 	  if ($comd eq 'DCC')
 	    {
@@ -2928,13 +3164,13 @@ sub process_ctcp_reply
 	    }
 	  elsif ($comd eq 'PING')
 	    {
-	      my $diff = scalar(VIM::Eval('localtime()')) - $args;
-	      irc_add_line('', "[%s%s(%s)]: %d seconds delay",
-				$pref, $from, $comd, $diff);
+	      my $diff = time() - $args;
+	      irc_add_line('', "[%s(%s)]: %d second%s delay",
+				$from, $comd, $diff, ($diff != 1 ? 's' : ''));
 	    }
 	  else
 	    {
-	      irc_add_line('', "[%s%s(%s)]: %s", $pref, $from, $comd, $args);
+	      irc_add_line('', "[%s(%s)]: %s", $from, $comd, $args);
 	    }
 	}
     }
@@ -3719,6 +3955,12 @@ sub dcc_check
 our $UMODE_VOICE  = 0x01;
 our $UMODE_CHOP	  = 0x02;
 
+sub is_channel
+{
+  # This might not be enough
+  return (shift =~ /^[&#+!]/);
+}
+
 sub set_umode
 {
   my $modes = shift;
@@ -3818,19 +4060,22 @@ sub set_cmode
 sub add_channel
 {
   my $chan = shift;
+  my $cref;
   # We should not change cases here.  It may cause troubles with non-ascii
   # characters
 
   unless (find_channel($chan))
     {
-      my $cref = {  cname => $chan,
-		    umode => 0,
-		    cmode => 0,
-		    key	  => undef,
-		    nicks => [],
-		    split => {}   };
+      $cref = {	name	=> $chan,
+		umode	=> 0,
+		cmode	=> 0,
+		key	=> undef,
+		nicks	=> [],
+		splits	=> []   };
       unshift(@{$Current_Server->{'chans'}}, $cref);
     }
+
+  return $cref;
 }
 
 sub find_channel
@@ -3841,7 +4086,7 @@ sub find_channel
   #	  Correct me if this is wrong.
   foreach my $cref (@{$Current_Server->{'chans'}})
     {
-      if ($chan eq lc($cref->{'cname'}))
+      if ($chan eq lc($cref->{'name'}))
 	{
 	  return $cref;
 	}
@@ -3855,7 +4100,7 @@ sub del_channel
 
   for (my $i = 0; $i <= $#{$Current_Server->{'chans'}}; $i++)
     {
-      if ($chan eq lc($Current_Server->{'chans'}->[$i]->{'cname'}))
+      if ($chan eq lc($Current_Server->{'chans'}->[$i]->{'name'}))
 	{
 	  splice(@{$Current_Server->{'chans'}}, $i, 1);
 	  last;
@@ -3867,6 +4112,11 @@ sub del_channel
 #
 # User management
 #
+
+sub is_me
+{
+  return (shift eq $Current_Server->{'nick'});
+}
 
 sub get_nicks
 {
@@ -3987,39 +4237,6 @@ sub change_nick
   return 0;
 }
 
-sub add_splitnick
-{
-  my ($nick, $chan) = @_;
-
-  if (my $cref = find_channel($chan))
-    {
-      unless (%{$cref->{'split'}})
-	{
-	  irc_add_line('', "!: Netsplit detected");
-	}
-      $cref->{'split'}->{$nick} = 1;
-    }
-}
-
-sub del_splitnick
-{
-  my ($nick, $chan) = @_;
-
-  if (my $cref = find_channel($chan))
-    {
-      if (exists($cref->{'split'}->{$nick}))
-	{
-	  delete($cref->{'split'}->{$nick});
-	  unless (%{$cref->{'split'}})
-	    {
-	      irc_add_line('', "*: Netsplit is over");
-	    }
-	  return 1;
-	}
-    }
-  return 0;
-}
-
 sub find_nickprefix
 {
   my ($nick, $chan) = @_;
@@ -4069,7 +4286,7 @@ sub draw_nickline
     {
       my $orig	= ($wnum == VIM::Eval('winnr()')) ? VIM::Eval("getline('.')")
 						  : undef;
-      my $todel = locate_line("$pref$nick");
+      my $todel = vim_search("$pref$nick");
 
       unless ($add && $todel == 1)
 	{
@@ -4086,7 +4303,7 @@ sub draw_nickline
 	}
       if ($orig)  # Restore the cursor position
 	{
-	  locate_line($orig);
+	  vim_search($orig);
 	}
       else
 	{
@@ -4105,7 +4322,6 @@ sub draw_nickline
 
 sub draw_nickwin
 {
-  # MEMO: Do not :redraw here.  Do it as few as possible: it's slow
   my $chan = shift;
   # Use bufnum since window number can change
   my $bnum = VIM::Eval("bufnr('%')");
@@ -4194,6 +4410,124 @@ sub identify_nick
 }
 
 #
+# Netsplit
+#
+
+sub add_netsplit
+{
+  my ($chan, $split) = @_;
+  my $ns;
+
+  if (my $cref = find_channel($chan))
+    {
+      $ns = { split => $split,
+	      joins => 0,
+	      nicks => {}   };
+      unshift(@{$cref->{'splits'}}, $ns);
+    }
+
+  return $ns;
+}
+
+sub find_netsplit
+{
+  my ($nick, $chan, $split) = @_;
+
+  foreach my $cref (@{$Current_Server->{'chans'}})
+    {
+      unless ($chan && $cref->{'name'} ne $chan)
+	{
+	  foreach my $ns (@{$cref->{'splits'}})
+	    {
+	      if ($split && $ns->{'split'} ne $split)
+		{
+		  next;
+		}
+	      if ($nick && !exists($ns->{'nicks'}->{$nick}))
+		{
+		  next;
+		}
+	      return $ns;
+	    }
+	  if ($chan)
+	    {
+	      last;
+	    }
+	}
+    }
+
+  return undef;
+}
+
+sub del_netsplit
+{
+  my ($chan, $split) = @_;
+
+  if (my $cref = find_channel($chan))
+    {
+      for (my $i = 0; $i <= $#{$cref->{'splits'}}; $i++)
+	{
+	  if ($cref->{'splits'}->[$i]->{'split'} eq $split)
+	    {
+	      splice(@{$cref->{'splits'}}, $i, 1);
+	      last;
+	    }
+	}
+    }
+}
+
+sub add_splitnick
+{
+  my ($nick, $chan, $split) = @_;
+  my $ns = find_netsplit(undef, $chan, $split);
+
+  unless ($ns)
+    {
+      $ns = add_netsplit($cref);
+      if ($ns)
+	{
+	  # Forget about the leftovers?
+	  add_timer(600, \&del_netsplit, [ $chan, $split ]);
+
+	  unless (find_netsplit($nick, undef, $split))
+	    {
+	      irc_add_line('', "!: Netsplit detected: %s", $split);
+	    }
+	}
+    }
+
+  if ($ns)
+    {
+      $ns->{'nicks'}->{$nick} = 1;
+    }
+}
+
+sub del_splitnick
+{
+  my ($nick, $chan) = @_;
+
+  if (my $ns = find_netsplit($nick, $chan))
+    {
+      my $split = $ns->{'split'};
+
+      unless ($ns->{'joins'}++)
+	{
+	  irc_add_line('', "*: Netjoin detected: %s, %d are to join",
+			    $split, scalar(keys(%{$ns->{'nicks'}})));
+	}
+
+      delete($ns->{'nicks'}->{$nick});
+      unless (%{$ns->{'nicks'}})
+	{
+	  del_netsplit($chan, $split);
+	  irc_add_line('', "*: Netsplit is over: %s", $split);
+	}
+      return 1;
+    }
+  return 0;
+}
+
+#
 # Parsing IRC messages
 #
 
@@ -4211,10 +4545,6 @@ sub parse_number
     {
       set_connected(1);
       irc_add_line('', $mesg);
-      unless (is_me($to))	# user had to change nick when connecting
-	{
-	  VIM::DoCommand('call s:SetCurNick("'.do_escape($to).'")');
-	}
     }
   elsif ($comd == 002)	# RPL_YOURHOST
     {
@@ -4261,8 +4591,8 @@ sub parse_number
     }
   elsif ($comd == 302)	# RPL_USERHOST
     {
-      # Get the first one.  This should be called upon logon, to obtain the
-      # hostname of the user.  Necessary for dcc things.
+      # Get the first one.  This should be called upon logon, to obtain your
+      # hostname.  Necessary for dcc things.
       if (my ($nick, $host) = ($mesg =~ /^([^*=+-]+)[^@]+@(\S+)/))
 	{
 	  if (is_me($nick))
@@ -4458,7 +4788,6 @@ sub parse_number
 	{
 	  sort_nicks($chan);
 	  draw_nickwin($chan);
-	  VIM::DoCommand('redraw');
 	}
       else
 	{
@@ -4492,7 +4821,8 @@ sub parse_number
       irc_add_line('', $mesg);
       unless ($Current_Server->{'conn'} & $CS_LOGIN)
 	{
-	  VIM::DoCommand("call s:Send_NICK('NICK', '')");
+	  $Current_Server->{'nick'} .= '_';
+	  irc_send("NICK %s", $Current_Server->{'nick'});
 	}
     }
   else
@@ -4534,10 +4864,9 @@ sub parse_join
 	    {
 	      # Keep your name from appearing twice in the nicks window,
 	      # assuming NAMES are sent just after the JOIN line.  I.e.,
-	      # assuming the nicks list contains your name only at this point
-	      # in time.
-	      # I'm doing this because I don't want to check duplicates in
-	      # add_nick(), for speed issue.
+	      # assuming the internal nicks list contains your name only at
+	      # this point in time.  I'm doing this because I don't want to
+	      # check duplicates in add_nick(), for speed issue.
 	      init_nicks($chan);
 	      irc_send("MODE %s", $chan);
 	    }
@@ -4605,18 +4934,18 @@ sub parse_nick
 {
   my ($from, $args) = @_;
 
-  if (my ($nick) = (${$args} =~ /^:(.*)$/))
+  if (my ($nick) = (${$args} =~ /^:(.+)$/))
     {
       if (is_me($from))
 	{
+	  $Current_Server->{'nick'} = $nick;
 	  irc_add_line('', "*: New nick %s approved", $nick);
 	  irc_send("MODE %s", $nick);
-	  VIM::DoCommand('call s:SetCurNick("'.do_escape($nick).'")');
 	}
 
       foreach my $cref (@{$Current_Server->{'chans'}})
 	{
-	  my $chan = $cref->{'cname'};
+	  my $chan = $cref->{'name'};
 	  if (change_nick($from, $nick, $chan))
 	    {
 	      draw_nickwin($chan);
@@ -4633,13 +4962,14 @@ sub parse_notice
 
   if (my ($chan, $mesg) = (${$args} =~ /^(\S+) :?(.*)$/))
     {
-      unless (identify_nick($from, \$mesg))
+      unless (identify_nick($from, \$mesg)) # if not from nickserv
 	{
-	  my $pref = is_channel($chan) ? find_nickprefix($from, $chan) : undef;
-
-	  if (process_ctcp_reply($from, $pref, $chan, \$mesg))
+	  if (process_ctcp_reply($from, $chan, \$mesg))
 	    {
-	      irc_add_line($chan, "[%s%s]: %s", $pref, $from, $mesg);
+	      irc_add_line($chan, "[%s%s]: %s",
+				  (is_channel($chan)
+				    ? find_nickprefix($from, $chan) : undef),
+				  $from, $mesg);
 	    }
 	}
     }
@@ -4670,8 +5000,25 @@ sub parse_ping
 {
   my $args = shift;
 
+  $Current_Server->{'lastping'} = time();
   irc_send("PONG :%s", ${$args});
-  irc_add_line('', "Ping? Pong!");
+
+  if (0)
+    {
+      irc_add_line('', "Ping? Pong!");
+    }
+}
+
+sub parse_pong
+{
+  my ($from, $args) = @_;
+
+  if (0 && (my ($time) = (${$args} =~ /(\d+)$/)))
+    {
+      my $diff = time() - $time;
+      irc_add_line('', "*: Pong from %s (%d second%s)", $from, $diff,
+						      ($diff != 1 ? 's' : ''));
+    }
 }
 
 sub parse_privmsg
@@ -4699,12 +5046,10 @@ sub parse_privmsg
 	    {
 	      irc_add_line($chan, "<%s%s>: %s", $pref, $from, $mesg);
 	    }
-	  else
+	  elsif (is_me($chan))
 	    {
-	      if (is_me($chan))
-		{
-		  irc_chat_line($from, "<%s>: %s", $from, $mesg);
-		}
+	      irc_chat_line($from, "<%s>: %s", $from, $mesg);
+	      vim_beep(1);
 	    }
 	}
     }
@@ -4719,7 +5064,7 @@ sub parse_quit
 
   foreach my $cref (@{$Current_Server->{'chans'}})
     {
-      my $chan = $cref->{'cname'};
+      my $chan = $cref->{'name'};
       my $pref = find_nickprefix($from, $chan);
 
       if (del_nick($from, $chan))
@@ -4727,10 +5072,9 @@ sub parse_quit
 	  # Handle netsplits: just hide QUIT messages if one occurs.  Also,
 	  # hold the nicks, who are to be resurrected, to hide the expected
 	  # JOIN messages.
-	  # TODO: Show some message about what is going on?
 	  if ($split)
 	    {
-	      add_splitnick($from, $chan);
+	      add_splitnick($from, $chan, $mesg);
 	    }
 	  else
 	    {
@@ -4893,14 +5237,19 @@ sub vim_printf
   VIM::Msg(sprintf(shift, @_));
 }
 
-sub locate_line
+sub vim_beep
+{
+  VIM::DoCommand('call s:Beep('.shift.')');
+}
+
+sub vim_search
 {
   return scalar(VIM::Eval('s:LocateLine("'.do_escape(shift).'")'));
 }
 
 EOP
 endfunction
-if s:debug
+if exists('s:sid') && s:debug
   call s:PerlIRC()
 endif
 endif
