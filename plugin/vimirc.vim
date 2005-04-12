@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 Feb 2004
-" Last Change: Sun, 10 Apr 2005 12:27:30 +0900 (JST)
+" Last Change: Wed, 13 Apr 2005 02:13:27 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -328,7 +328,7 @@
 if exists('g:loaded_vimirc') || &compatible
   finish
 endif
-let s:version = '0.9.25'
+let s:version = '0.9.26'
 
 let s:debug = (s:version =~# '-devel$')
 if !s:debug
@@ -1224,7 +1224,7 @@ function! s:OpenBuf_Server(...)
     endif
   endif
 
-  if loaded
+  if loaded && !s:autocmd_disabled
     if a:0
       " a:1 is given only when user executed /server command, in which case we
       " must clear the dead state of this buffer.
@@ -1238,14 +1238,14 @@ function! s:OpenBuf_List()
   let bufnum = s:GetBufNum_List()
   let loaded = (bufnum >= 0)
 
-  if !(loaded && s:BufVisit(bufnum))
+  if s:autocmd_disabled || !(loaded && s:BufVisit(bufnum))
     " Open it next to, or on the server window
     if !s:autocmd_disabled
       if !s:BufVisit(s:GetBufNum_Server())
 	call s:CanOpenChanServ()
       endif
       if s:split
-	" I don't like vertical split, which was the original behaviour, though
+	" I don't like vertical split, which was the original behaviour
 	call s:SplitBuf_Channel()
       endif
     endif
@@ -1258,7 +1258,7 @@ function! s:OpenBuf_List()
       call s:InitBuf_List(bufname)
     endif
   endif
-  if loaded
+  if loaded && !s:autocmd_disabled
     call s:DoNormal('^')
   endif
 endfunction
@@ -1482,8 +1482,8 @@ function! s:ModifyBuf(modify, ...)
   endif
 endfunction
 
-function! s:PeekBuf(peek, orgwin)
-  if a:peek
+function! s:PeekBuf(orgwin)
+  if !a:orgwin
     call s:PrePeekBuf()
   else
     call s:PostPeekBuf(a:orgwin)
@@ -1498,11 +1498,13 @@ function! s:PrePeekBuf()
 endfunction
 
 function! s:PostPeekBuf(orgwin)
-  if line('.') != line("'\"") " cursor line might have not been set by vim
-    '"
+  let lnum = s:GetPrevLine()
+  if lnum > 0 && line('.') != lnum " cursor line has not been set by vim
+    execute lnum
   endif
   call s:ExecuteSilent('close!')
   call s:WinVisit(a:orgwin)
+
   let &equalalways = (s:in_loop || s:equalalways)
   let s:autocmd_disabled = 0
 endfunction
@@ -1824,7 +1826,9 @@ function! s:PreCloseBuf_Command(destbuf, purge)
   if opened || s:OpenBufNum('belowright 1split', cmdbuf)
     call s:NeatenBuf_Command(a:purge)
     if a:destbuf
-      if !(opened && s:IsNick(s:channel))  " keep it open when chatting
+      if opened && s:IsNick(s:channel)  " keep it open when chatting
+	call s:RedrawScreen(0)
+      else
 	let s:autocmd_disabled = 1
 	call s:BufClose(cmdbuf)
 	let s:autocmd_disabled = 0
@@ -1987,9 +1991,13 @@ endfunction
 " Restoring windows
 "
 
+function! s:GetPrevLine()
+  return line("'\"")
+endfunction
+
 " Restore the previous cursor position after re-opening a buffer
 function! s:RestorePrevLine()
-  let lnum = line("'\"")
+  let lnum = s:GetPrevLine()
   " XXX: mark '" could erroneously be set to 1 (why?)
   call s:WinBottom((lnum <= 0 || lnum > line('$')) ? '$' : lnum)
 
@@ -2324,9 +2332,9 @@ function! s:SendLine(line)
 	let rx = s:GetCmdRx(comd)
 	" NOTE: Matching with empty string always results in true (!!)
 	if strlen(rx) && args =~ rx
-	  let args = s:StrTrim(s:StrMatch(args, rx, '\1').
-		\	       s:StrMatch(args, rx, ' :\2'))
+	  let args = s:StrMatch(args, rx, '\1').s:StrMatch(args, rx, ' :\2')
 	endif
+	let args = s:StrTrim(args)
       endif
     endif
 
@@ -2406,7 +2414,7 @@ function! s:PostDoSend(comd, arglen)
 endfunction
 
 function! s:SetLastActive()
-  if !s:autoaway
+  if !s:autoaway || s:lastactive >= localtime()
     return
   endif
 
@@ -2781,7 +2789,7 @@ function! s:ExpandCmd(comd)
       let comd = 'LIST'
     elseif comd =~# '^MOD\=$'
       let comd = 'MODE'
-    elseif 0 && comd =~# '^MOT\=$'
+    elseif comd =~# '^MOT$'
       let comd = 'MOTD'
     elseif comd =~# '^NA\%[ME]$'
       let comd = 'NAMES'
@@ -2832,7 +2840,7 @@ function! s:ExpandArgs(comd, args)
   let args = a:args
 
   if a:comd =~# '^\%(MODE\)$'
-    if a:args =~ '^[-+]'
+    if a:args =~ '^\%([-+].*\)\=$'
       let args = (s:IsChannel(s:channel) ? s:channel
 	    \				 : s:GetCurNick()).' '.a:args
     endif
@@ -2889,7 +2897,7 @@ function! s:ExpandArgs(comd, args)
       endif
       " Restore it, potentially squeezing the spaces in-between
       if strlen(channel)
-	let args = channel.(strlen(message) ? ' '.message : '')
+	let args = channel.' '.message
       endif
     endif
   endif
@@ -3189,16 +3197,13 @@ endfunction
 function! s:LoadList()
   call s:OpenBuf_List()
 
-  let loaded = !s:IsBufEmpty()
-  if !loaded
+  if s:IsBufEmpty()
     let list = s:GenFName_List()
-    let loaded = (filereadable(list)
-	  \		    && (localtime() - getftime(list)) < s:listexpire)
-    if loaded
+    if filereadable(list) && (localtime() - getftime(list)) < s:listexpire
       call s:Read(list)
     endif
   endif
-  return loaded
+  return !s:IsBufEmpty()
 endfunction
 
 function! s:UnloadList()
@@ -3446,7 +3451,7 @@ endfunction
 " Generic ones
 
 function! s:Beep(times)
-  if a:times <= 0 || s:lastbeep >= localtime()
+  if a:times <= 0 || s:lastbeep >= localtime() - 1
     return
   endif
 
@@ -4818,7 +4823,7 @@ function! s:Send_LIST(comd, args)
   my $comd = VIM::Eval('a:comd');
   my $args = VIM::Eval('a:args');
 
-  $Current_Server->{'list'}->{'line1'} = 0;
+  unset_info($Current_Server->{'list'}, $INFO_LINE1);
   irc_send("%s%s", $comd, ($args ? " $args" : ""));
 }
 EOP
@@ -5081,10 +5086,10 @@ sub add_server
 		timers	  => [],
 		lastping  => time(),
 		lastbuf   => undef,
-		lines	  => [],
-		list	  => { bufnum => -1, lines => [], line1 => 0 }
+		lines	  => []
 	      };
 
+  add_list($sref);
   push(@Servers, $sref);
   return $sref;
 }
@@ -5342,52 +5347,81 @@ sub set_curserver
     }
 }
 
-sub all_put_lines
+sub has_lines
+{
+  my $cref = shift;
+
+  return (exists($cref->{'lines'}) && @{$cref->{'lines'}});
+}
+
+sub put_all_lines
 {
   my $sref = shift;
-  my ($orgw, $peek);
 
-  if (@{$sref->{'lines'}})
+  if (has_lines($sref))
     {
-      ($orgw, $peek) = pre_put_lines('serv');
-      do_put_lines($sref, $peek);
-      post_put_lines($sref, $orgw, $peek);
+      put_serv_lines($sref);
     }
 
-  if (@{$sref->{'list'}->{'lines'}})
+  if (has_lines($sref->{'list'}))
     {
-      my $lref = $sref->{'list'};
-      ($orgw, $peek) = pre_put_lines('list');
-      do_put_lines($lref, $peek);
-
-      unless ($lref->{'line1'})
-	{
-	  $curbuf->Delete(1);
-	  $lref->{'line1'} = 1;
-	}
-      post_put_lines($lref, $orgw, $peek);
+      put_list_lines($sref->{'list'});
     }
 
   foreach my $cref (@{$sref->{'chans'}})
     {
-      if (@{$cref->{'lines'}})
+      if (has_lines($cref))
 	{
-	  ($orgw, $peek) = pre_put_lines('chan', [ $cref->{'name'} ]);
-	  do_put_lines($cref, $peek);
-	  post_put_lines($cref, $orgw, $peek);
+	  put_chan_lines($cref);
 	}
     }
 
   foreach my $chat (@{$sref->{'chats'}})
     {
-      if (@{$chat->{'lines'}})
+      if (has_lines($chat))
 	{
-	  ($orgw, $peek) = pre_put_lines('chat', [ $chat->{'nick'},
-						   $sref->{'server'} ]);
-	  do_put_lines($chat, $peek);
-	  post_put_lines($chat, $orgw, $peek);
+	  put_chat_lines($chat, $sref);
 	}
     }
+}
+
+sub put_serv_lines
+{
+  my $sref = shift;
+  my ($orgw, $peek) = pre_put_lines('serv');
+  do_put_lines($sref, $peek);
+  post_put_lines($sref, $orgw, $peek);
+}
+
+sub put_list_lines
+{
+  my $lref = shift;
+  my ($orgw, $peek) = pre_put_lines('list');
+  do_put_lines($lref, $peek);
+
+  unless (has_info($lref, $INFO_LINE1))
+    {
+      $curbuf->Delete(1);
+      set_info($lref, $INFO_LINE1);
+    }
+  post_put_lines($lref, $orgw, $peek);
+}
+
+sub put_chan_lines
+{
+  my $cref = shift;
+  my ($orgw, $peek) = pre_put_lines('chan', [ $cref->{'name'} ]);
+  do_put_lines($cref, $peek);
+  post_put_lines($cref, $orgw, $peek);
+}
+
+sub put_chat_lines
+{
+  my ($cref, $sref) = @_;
+  my ($orgw, $peek) = pre_put_lines('chat', [ $cref->{'nick'},
+					      $sref->{'server'} ]);
+  do_put_lines($cref, $peek);
+  post_put_lines($cref, $orgw, $peek);
 }
 
 sub pre_put_lines
@@ -5398,7 +5432,7 @@ sub pre_put_lines
 
   if ($peek)
     {
-      vim_peekbuf(1, 0);
+      vim_peekbuf(0);
       &{'vim_open_'.$type}(@{$args});
     }
   return ($orgw, $peek);
@@ -5417,7 +5451,7 @@ sub do_put_lines
       foreach my $line (@{$cref->{'lines'}})
 	{
 	  $curbuf->Append($curbuf->Count(), $line);
-	  vim_notifyentry();
+	  VIM::DoCommand("call s:NotifyNewEntry(0)");
 	}
     }
   else
@@ -5442,7 +5476,7 @@ sub post_put_lines
     {
       set_info($cref, $INFO_HASNEW);
       set_info($Current_Server, $INFO_UPDATE);
-      vim_peekbuf(0, $orgw);
+      vim_peekbuf($orgw);
     }
   else
     {
@@ -5452,13 +5486,14 @@ sub post_put_lines
   @{$cref->{'lines'}} = ();
 }
 
-sub irc_add_line
+sub irc_push_line
 {
   my $cref = shift;
   my $args = shift;
   my $form = shift(@{$args});
 
-  push(@{$cref->{'lines'}}, sprintf("%s $form", vim_gettime(1), @{$args}));
+  return push(@{$cref->{'lines'}}, sprintf("%s $form", vim_gettime(1),
+								  @{$args}));
 }
 
 sub irc_chan_line
@@ -5471,7 +5506,10 @@ sub irc_chan_line
       $cref = $Current_Server;
     }
 
-  irc_add_line($cref, \@_);
+  if (irc_push_line($cref, \@_) >= 10)
+    {
+      &{'put_'.($cref == $Current_Server ? 'serv' : 'chan').'_lines'}($cref);
+    }
 }
 
 sub irc_chat_line
@@ -5484,12 +5522,20 @@ sub irc_chat_line
       $cref = add_chat($nick, $Current_Server);
     }
 
-  irc_add_line($cref, \@_);
+  if (irc_push_line($cref, \@_) >= 10)
+    {
+      put_chat_lines($cref, $Current_Server);
+    }
 }
 
 sub irc_list_line
 {
-  push(@{$Current_Server->{'list'}->{'lines'}}, sprintf("%-22s %5d %s", @_));
+  my $lref = $Current_Server->{'list'};
+
+  if (push(@{$lref->{'lines'}}, sprintf("%-22s %5d %s", @_)) >= 30)
+    {
+      put_list_lines($lref);
+    }
 }
 
 sub irc_recv
@@ -5571,6 +5617,7 @@ sub irc_send
 
 our $INFO_UPDATE = 0x01;
 our $INFO_HASNEW = 0x02;
+our $INFO_LINE1	 = 0x04;
 
 sub update_info
 {
@@ -5604,7 +5651,9 @@ sub update_info
 			      sprintf(" %s[%d]*list\t\t\t%s",
 				      is_current($lref)
 					? '*'
-					: $dead ? '-' : ' ',
+					: has_info($lref, $INFO_HASNEW)
+					  ? '+'
+					  : $dead ? '-' : ' ',
 				      $lref->{'bufnum'},
 				      $sref->{'server'}));
 	    }
@@ -5726,7 +5775,7 @@ sub do_timer
   foreach my $sref (@Servers)
     {
       set_curserver($sref->{'sock'});
-      all_put_lines($sref);
+      put_all_lines($sref);
 
       if ($sref->{'conn'} & $CS_LOGIN)
 	{
@@ -6193,7 +6242,7 @@ sub dcc_change_nicks
     }
 }
 
-sub dcc_add_line
+sub dcc_parse_line
 {
   my ($cref, $dcc, $itsme) = @_;
 
@@ -6205,13 +6254,16 @@ sub dcc_add_line
 	{
 	  Encode::from_to($line, $ENC_IRC, $ENC_VIM);
 	}
-      irc_add_line($cref, [ "%s%s%s: %s",
-			    ($action ? '*' : '='),
-			    ($itsme
-			      ? $dcc->{'iserver'}->{'nick'}
-			      : $dcc->{'nick'}),
-			    ($action ? '*' : '='),
-			    $line ]);
+      if (irc_push_line($cref, [ "%s%s%s: %s",
+				  ($action ? '*' : '='),
+				  ($itsme
+				    ? $dcc->{'iserver'}->{'nick'}
+				    : $dcc->{'nick'}),
+				  ($action ? '*' : '='),
+				  $line ]) >= 10)
+	{
+	  put_chat_lines($cref, $dcc->{'iserver'});
+	}
     }
 }
 
@@ -6220,7 +6272,7 @@ sub dcc_chat_line
   my ($dcc, $itsme) = @_;
   my $cref = find_chat("=$dcc->{'nick'}", $dcc->{'iserver'});
 
-  dcc_add_line($cref, $dcc, $itsme);
+  dcc_parse_line($cref, $dcc, $itsme);
 
   unless ($dcc->{'iserver'}->{'away'} || $itsme)
     {
@@ -7130,6 +7182,13 @@ sub del_chan
   vim_close_chan($chan);
 }
 
+sub add_list
+{
+  my $sref = shift;
+
+  $sref->{'list'} = { bufnum => -1, info => 0, lines => [] };
+}
+
 sub find_list
 {
   my $sref = shift;
@@ -7475,6 +7534,11 @@ sub find_chat
 {
   my ($nick, $sref) = @_;
 
+  unless ($sref)
+    {
+      $sref = $Current_Server;
+    }
+
   foreach my $chat (@{$sref->{'chats'}})
     {
       if ($chat->{'nick'} eq $nick)
@@ -7795,13 +7859,6 @@ sub parse_number
     {
       irc_chan_line('', '*: Listing channels...');
     }
-  elsif (0 && $comd == 322)	# RPL_LIST
-    {
-      if (my ($chan, $num, $topic) = ($mesg =~ /^(\S+)\s+(\d+)\s+:(.*)$/))
-	{
-	  irc_list_line($chan, $num, $topic);
-	}
-    }
   elsif ($comd == 323)	# RPL_LISTEND
     {
       VIM::DoCommand('call s:PostLoadList(1)');
@@ -8102,14 +8159,18 @@ sub p_notice
 	{
 	  if (process_ctcp_reply($from, $chan, \$mesg))
 	    {
-	      irc_chan_line($chan, "[%s%s]: %s",
-				    (is_chan($chan)
-				      ? find_nickprefix($from, $chan) : undef),
-				    $from, $mesg);
-	      unless (is_chan($chan))
+	      if (is_chan($chan))
 		{
-		  vim_beep(1);
+		  irc_chan_line($chan, "[%s%s]: %s",
+					find_nickprefix($from, $chan),
+					$from, $mesg);
 		}
+	      else
+		{
+		  &{'irc_cha'.(find_chat($from) ? 't' : 'n').'_line'}(
+					      $from, "[%s]: %s", $from, $mesg);
+		}
+	      vim_beep(1);
 	    }
 	}
     }
@@ -8494,12 +8555,7 @@ sub vim_modifybuf
 
 sub vim_peekbuf
 {
-  VIM::DoCommand("call s:PeekBuf($_[0], $_[1])");
-}
-
-sub vim_notifyentry
-{
-  VIM::DoCommand("call s:NotifyNewEntry(0)");
+  VIM::DoCommand("call s:PeekBuf($_[0])");
 }
 
 EOP
