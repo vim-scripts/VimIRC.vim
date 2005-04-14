@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 Feb 2004
-" Last Change: Wed, 13 Apr 2005 02:13:27 +0900 (JST)
+" Last Change: Fri, 15 Apr 2005 14:09:08 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -186,8 +186,10 @@
 "		  or do ex commands.  Hit <Space> to re-enter the normal
 "		  (online) mode again.
 "
-"		  Hitting "q" or "Q" will quit the current channel, chat, or
-"		  VimIRC itself, depending on the context.
+"		  Hitting "q" will quit the current channel, chat, server, or
+"		  VimIRC itself, depending on the context ("Q" does the last
+"		  forcibly).  Contrarily, "r" and "R" keys would reconnect to
+"		  servers, if they were disconnected.
 "
 "		  Special cases:
 "
@@ -324,11 +326,27 @@
 "	NOTE: ALIASes take precedence over ABBREVIATIONs.  E.g., "/q" is an
 "	abbreviation of "/query", but you can (re)define "/q" as "/quit", if
 "	you prefer.
+"
+"   9.	There are several ways to open (hidden) channel/chat/server buffers:
+"	(1) In normal mode (both online and offline), hit "<C-N>" and "<C-P>"
+"	    to cycle through the buffers.  It will open buffers in the same
+"	    order shown in the info-bar on the left.
+"	    You can prepend count: "2<C-N>" goes to the second next buffer
+"	    counted from the current one.
+"	    You can also prepend "<C-W>", to open the buffer in a new window
+"	    (e.g., "<C-W><C-N>", "<C-W>2<C-N>", "2<C-W><C-N>").
+"	    NOTE: Count will be multiplied if used both before and after
+"	    "<C-W>".
+"	(2) Use ":buffer" command, as described in Tip 2.
+"	(3) Visit the info-bar (with "<C-W>t") and select the one you want to
+"	    open, then hit "<CR>".  "<C-W><CR>" will open it in a new window.
+"	(4) If you try to join already joined channels, either via "/join" or
+"	    through channels-list, they'll just safely be opened.
 
 if exists('g:loaded_vimirc') || &compatible
   finish
 endif
-let s:version = '0.9.26'
+let s:version = '0.9.27'
 
 let s:debug = (s:version =~# '-devel$')
 if !s:debug
@@ -553,7 +571,6 @@ function! s:SetGlobVars()
   let s:eadirection = &eadirection
   set eadirection=ver
   let s:equalalways = &equalalways
-  set equalalways
   let s:lazyredraw = &lazyredraw
   set lazyredraw
   let s:showbreak = &showbreak
@@ -774,6 +791,7 @@ function! s:PreMainLoop()
   let s:in_loop = 1
   let s:current_changed = 1
   call s:ToggleCursor(1)
+  call s:ClearCommand(0)
   " Show line-cursor, so the user can easily recognize that she is online
   call s:HiliteLine('.')
 endfunction
@@ -1002,7 +1020,8 @@ function! s:IsBufType_Chat(...)
 endfunction
 
 function! s:IsBufType_ServerDead()
-  return (s:IsBufType_Server() && s:GetVimVar('b:dead'))
+  return (s:IsBufType_IRC() && !(s:IsBufType_Chat() && b:channel[0] == '=')
+	\ && getbufvar(s:GetBufNum_Server(b:server), 'dead') + 0)
 endfunction
 
 function! s:IsServer(server)
@@ -1258,6 +1277,7 @@ function! s:OpenBuf_List()
       call s:InitBuf_List(bufname)
     endif
   endif
+
   if loaded && !s:autocmd_disabled
     call s:DoNormal('^')
   endif
@@ -1277,6 +1297,7 @@ function! s:OpenBuf_Channel(channel)
 
     if loaded
       call s:OpenBuf('buffer', bufnum)
+      call s:RestorePrevLine()
     else
       let bufname = s:GenBufName_Channel(a:channel)
       call s:OpenBuf('edit', bufname)
@@ -1286,9 +1307,6 @@ function! s:OpenBuf_Channel(channel)
     if &l:winfixheight
       let &l:winfixheight = 0
     endif
-  endif
-  if loaded && !s:autocmd_disabled
-    call s:RestorePrevLine()
   endif
 endfunction
 
@@ -1306,14 +1324,12 @@ function! s:OpenBuf_Chat(nick, server)
 
     if loaded
       call s:OpenBuf('buffer', bufnum)
+      call s:RestorePrevLine()
     else
       let bufname = s:GenBufName_Chat(a:nick, a:server)
       call s:OpenBuf('edit', bufname)
       call s:InitBuf_Chat(bufname, a:nick, a:server)
     endif
-  endif
-  if loaded && !s:autocmd_disabled
-    call s:RestorePrevLine()
   endif
 endfunction
 
@@ -1338,14 +1354,16 @@ function! s:OpenBuf_Nicks(channel, ...)
   return retval
 endfunction
 
-function! s:OpenBuf_Command()
+function! s:OpenBuf_Command(posting)
   if !(s:opened && s:IsBufType_IRC())
     return
   endif
 
   " Set the current server name here, so the buffer number/name will be
   " generated properly
-  call s:SetCurServer(b:server)
+  if a:posting
+    call s:SetCurServer(b:server)
+  endif
 
   let channel = s:GetVimVar('b:channel')
   let bufnum  = s:GetBufNum_Command(channel)
@@ -1355,7 +1373,7 @@ function! s:OpenBuf_Command()
     call s:VisitBuf_ChanServ(channel)
   endif
 
-  " &equalalways will be restored when the command window is closed
+  " This is necessary for opening it in a desired height
   let &equalalways = 0
 
   if !(loaded && s:BufVisit(bufnum))
@@ -1373,8 +1391,10 @@ function! s:OpenBuf_Command()
     setlocal winfixheight
   endif
 
-  call s:OpenNewLine()
-  call s:DoInsert(0)
+  if a:posting
+    call s:OpenNewLine()
+    call s:DoInsert(0)
+  endif
 endfunction
 
 function! s:PostOpenBuf_Server()
@@ -1426,10 +1446,12 @@ function! s:PostOpenBuf_Chat()
   let nick  = getbufvar(abuf, 'channel')
   let server= getbufvar(abuf, 'server')
   if strlen(nick) && strlen(server)
-    if s:OpenBuf_Nicks(nick, server)
-      call s:BufVisit(abuf)
-    endif
+    " Need to set the current server before opening the nicks window, to
+    " obtain a proper nick
     call s:ResetCurChanServ(nick, server)
+    call s:OpenBuf_Nicks(nick, server)
+    call s:OpenBuf_Command(0)
+    call s:BufVisit(abuf)
   endif
 endfunction
 
@@ -1451,7 +1473,7 @@ function! s:SplitBuf_Channel()
   if s:OpenBuf((below ? 'belowright' : 'aboveleft').' split')
     call s:DoWincmd(below ? 'k' : 'j')
     if !s:IsBufType_List()
-      call s:WinBottom()
+      call s:WinScroll2('.')
     endif
     if hasnick
       call s:OpenBuf_Nicks(b:channel, b:server)
@@ -1498,14 +1520,8 @@ function! s:PrePeekBuf()
 endfunction
 
 function! s:PostPeekBuf(orgwin)
-  let lnum = s:GetPrevLine()
-  if lnum > 0 && line('.') != lnum " cursor line has not been set by vim
-    execute lnum
-  endif
   call s:ExecuteSilent('close!')
   call s:WinVisit(a:orgwin)
-
-  let &equalalways = (s:in_loop || s:equalalways)
   let s:autocmd_disabled = 0
 endfunction
 
@@ -1548,10 +1564,12 @@ function! s:DoSettings()
   call s:RegistMap('<Space>', 'MainLoop()')
   call s:RegistMap('<CR>', 'HandleEnter(0)')
   call s:RegistMap('<C-CR>,<S-CR>,<C-W><CR>,<C-W><C-CR>', 'HandleEnter(1)')
-  call s:RegistMap('a,A,i,I,o,O', 'OpenBuf_Command()')
+  call s:RegistMap('a,A,i,I,o,O', 'OpenBuf_Command(1)')
   call s:RegistMap('p,P', 'Beep(1)', 'n,v')
   call s:RegistMap('q,ZZ', 'QuitWhat(0)')
   call s:RegistMap('Q,ZQ', 'QuitWhat(1)')
+  call s:RegistMap('r', 'ReconnServer(0)')
+  call s:RegistMap('R', 'ReconnServer(1)')
   call s:RegistMap('<C-L>', 'RestoreWinSize(1)')
   call s:RegistMap('<C-N>', 'OpenNextChanServ(1, 0)')
   call s:RegistMap('<C-P>', 'OpenNextChanServ(0, 0)')
@@ -1749,7 +1767,7 @@ function! s:InitBuf_Command(bufname, channel)
   call s:SetBufNum(a:bufname)
 endfunction
 
-function! s:FillBuf_Nicks(nick, ...)
+function! s:FillBuf_Nicks(nick)
   call s:ModifyBuf(1)
   call s:BufClear()
   call setline(1, a:nick)
@@ -1871,7 +1889,7 @@ function! s:CloseBuf_Channel(channel)
     endif
     call s:BufClose(bufnum)
     if !s:IsBufType_List()
-      call s:WinBottom()
+      call s:WinScroll2('.')
     endif
   endif
 endfunction
@@ -1888,7 +1906,7 @@ function! s:CloseBuf_Chat(nick, server)
     endif
     call s:BufClose(bufnum)
     if !s:IsBufType_List()
-      call s:WinBottom()
+      call s:WinScroll2('.')
     endif
   endif
 
@@ -1915,7 +1933,7 @@ function! s:PostCloseBuf_Command(cmdbuf, destbuf)
   if !s:IsBufType_List()
     " XXX: I do this to prevent channels from unexpectedly scrolling UP due
     " to BufClose above.
-    call s:WinBottom()
+    call s:WinScroll2('.')
   endif
 endfunction
 
@@ -1948,25 +1966,23 @@ endfunction
 
 function! s:CloseWin_What(cond)
   let retval = 1
-
-  let s:autocmd_disabled = 1
   let curbuf = bufnr('%')
 
+  let s:autocmd_disabled = 1
   call s:DoWincmd('b')
   while 1
     " TODO: Accept arguments and/or multiple conditions?
-    if {a:cond}()
+    if s:{a:cond}()
       " XXX: Vim crashes here sometimes
-      if s:WinClose()
-	continue
-      else
+      if !s:WinClose()
 	let retval = 0
 	break
       endif
     elseif winnr() == 1
       break
+    else
+      call s:DoWincmd('W')
     endif
-    call s:DoWincmd('W')
   endwhile
 
   call s:BufVisit(curbuf)
@@ -1976,14 +1992,15 @@ function! s:CloseWin_What(cond)
 endfunction
 
 function! s:CloseWin_IRC()
-  if !s:CloseWin_What('s:IsBufType_IRC')
+  if !s:CloseWin_What('IsBufType_IRC')
     enew!
   endif
   call s:RedrawScreen(0)
 endfunction
 
 function! s:CloseWin_DeadServer()
-  call s:CloseWin_What('s:IsBufType_ServerDead')
+  call s:CloseWin_What('IsBufType_ServerDead')
+  call s:ClearCommand(0)
   call s:RedrawScreen(0)
 endfunction
 
@@ -1998,13 +2015,13 @@ endfunction
 " Restore the previous cursor position after re-opening a buffer
 function! s:RestorePrevLine()
   let lnum = s:GetPrevLine()
-  " XXX: mark '" could erroneously be set to 1 (why?)
-  call s:WinBottom((lnum <= 0 || lnum > line('$')) ? '$' : lnum)
-
-  " Make the bottom line visible, if possible
-  while !s:IsBottomVisible(0) && winline() > 2
-    cal s:DoNormal("\<C-E>")
-  endwhile
+  if s:autocmd_disabled
+    if lnum > 0 && line('.') != lnum
+      execute lnum
+    endif
+  else
+    call s:WinScroll2(lnum)
+  endif
 endfunction
 
 " Tackle the annoyance of unexpected window scrolling when opening another
@@ -2024,11 +2041,13 @@ function! s:RestoreWinSize(restore)
 
   let s:autocmd_disabled = 1
   if a:restore
-    let curwin = winnr()
-    let prevwin= s:GetWinNum_Prev(0)
+    let orgwin = winnr()
+    let prevwin = s:GetWinNum_Prev(0)
+    let equalalways = s:ToggleEqualWin(1)
   endif
 
-  call s:DoWincmd('b')
+  let botwin = s:DoWincmd('b')
+  call s:DoWincmd('t')
   while 1
     if s:IsBufType_Nicks()
       call s:WinResize(s:nickswidth, 1)
@@ -2037,16 +2056,23 @@ function! s:RestoreWinSize(restore)
     elseif s:IsBufType_Info()
       call s:WinResize(s:infowidth, 1)
     endif
-    if winnr() == 1
+    if s:IsBufType_ChanServ() && !s:IsBufType_List()
+      " XXX: Window could unexpectedly scroll up due to resizing
+      call s:WinScroll2('.')
+    else
+      call s:DoNormal('^')
+    endif
+    if winnr() == botwin
       break
     endif
-    call s:DoWincmd('W')
+    call s:DoWincmd('w')
   endwhile
 
   if a:restore
     call s:WinVisit(prevwin)
-    call s:WinVisit(curwin)
+    call s:WinVisit(orgwin)
     call s:RedrawScreen(1)
+    let &equalalways = equalalways
   endif
   let s:autocmd_disabled = 0
 endfunction
@@ -2059,6 +2085,16 @@ function! s:GetWinNum_Prev(restore)
     call s:DoWincmd('p')
   endif
   return prevwin - ((curwin > 1 && curwin == prevwin) ? 1 : 0)
+endfunction
+
+function! s:ToggleEqualWin(on)
+  let equalalways = &equalalways
+  if a:on
+    let &equalalways = !&equalalways
+  endif
+  let &equalalways = a:on
+
+  return equalalways
 endfunction
 
 "
@@ -2149,12 +2185,14 @@ function! s:HandleKey(key)
       endif
       call s:DoInsert(char ==? 'a')
     else
-      call s:OpenBuf_Command()
+      call s:OpenBuf_Command(1)
     endif
     call s:RedrawScreen(0)
     throw 'IMGONNAPOST'
   elseif char == "\<F1>"
     call s:Cmd_HELP()
+  elseif char ==? 'r'
+    call s:ReconnServer(char ==# 'R')
   elseif char ==? 'q'
     call s:QuitWhat(char ==# 'Q')
   endif
@@ -2367,7 +2405,7 @@ function! s:PreDoSend(comd, args)
   if send
     call s:Cmd_{a:comd}(a:args)
   else
-    let send = s:IsConnected()
+    let send = (s:IsConnected() || a:comd =~# '^G\%(QUIT\|AWAY\)$')
     if send
       if !strlen(a:comd)
 	let send = s:PreSendMSG(a:args)
@@ -2385,7 +2423,7 @@ endfunction
 
 " Move cursor to an appropriate window
 function! s:PostDoSend(comd, arglen)
-  if a:comd =~# '^\%(JOIN\|LIST\)$'
+  if a:comd =~# '^\%(JOIN\|LIST\|NOTICE\|PRIVMSG\)$'
     return
   endif
 
@@ -2890,7 +2928,7 @@ function! s:ExpandArgs(comd, args)
       let channel = s:ExpandChannel(s:StrMatch(a:args, rx, '\1'))
       let message = s:StrMatch(a:args, rx, '\2')
 
-      if !s:IsChannel(channel) && (a:comd =~# '^\%(KICK\|PART\|TOPIC\)$')
+      if !s:IsChannel(channel) && a:comd =~# '^\%(KICK\|PART\|TOPIC\)$'
 	" If user ommitted channel(s), supply the current one
 	let channel = s:channel
 	let message = a:args
@@ -2947,6 +2985,18 @@ endfunction
 "
 " Wrapper functions for commencing communication
 "
+
+function! s:ReconnServer(force)
+  let server = s:GetVimVar('b:server')
+  if !s:IsServer(server)
+    let server = s:server
+  endif
+  if !s:IsConnected(server) && (a:force
+	\			|| s:Confirm_YN('Reconnect to server '.server))
+    call s:Cmd_SERVER(server)
+    call s:MainLoop()
+  endif
+endfunction
 
 function! s:StartServer(...)
   let manual = a:0
@@ -3013,8 +3063,10 @@ function! s:StartChat(nick, ...)
   " TODO: Accept multiple nicks
   if s:IsNick(a:nick)
     call s:OpenBuf_Chat(a:nick, (a:0 ? a:1 : s:server))
-    call s:OpenBuf_Command()
+    call s:OpenBuf_Command(1)
     throw 'IMGONNAPOST'
+  elseif strlen(a:nick)
+    call s:EchoError('Not a proper nick: '.a:nick)
   endif
 endfunction
 
@@ -3233,6 +3285,7 @@ endfunction
 
 function! s:NotifyOffline()
   call s:HiliteClear()
+
   if s:IsBufType_IRC()
     echo s:IsSockOpen() ? s:IsBufType_Command()
 	  \		    ? 'Hitting <CR> will send out the current line'
@@ -3711,7 +3764,7 @@ endfunction
 
 function! s:Key2Char(key)
   " Special keys (<F1> etc.) are char values already (f_getchar() in eval.c)
-  return (a:key || s:IsZero(a:key)) ? nr2char(a:key) : a:key
+  return type(a:key) ? a:key : nr2char(a:key)
 endfunction
 
 function! s:GetChar(cursor)
@@ -4013,7 +4066,7 @@ endfunction
 
 function! s:BufClose(bufnum)
   let retval = 1
-  if a:bufnum >= 0
+  if bufwinnr(a:bufnum) >= 0
     let &equalalways = 0
 
     while s:BufVisit(a:bufnum)
@@ -4091,21 +4144,14 @@ function! s:WinBottom(...)
 endfunction
 endif
 
-if 1
 function! s:WinLine(lnum)
-  execute a:lnum
-  return line('.')
-endfunction
-else
-" Secure version
-function! s:WinLine(lnum)
+  " For safety, convert it to number if it isn't
   let lnum = a:lnum ? a:lnum : line(a:lnum)
   if lnum > 0 && line('.') != lnum
     execute lnum
   endif
   return line('.')
 endfunction
-endif
 
 function! s:WinResize(size, vertical)
   if a:size > 0
@@ -4122,6 +4168,15 @@ function! s:WinScroll(cnt)
     call s:WinLine(org)
     call s:RedrawScreen(0)
   endif
+endfunction
+
+function! s:WinScroll2(lnum)
+  " First, scroll to the specified line
+  call s:WinBottom((type(a:lnum) || a:lnum > 0) ? a:lnum : '$')
+  " Then make the bottom line visible, if possible
+  while !s:IsBottomVisible(0) && winline() > 2
+    cal s:DoNormal("\<C-E>")
+  endwhile
 endfunction
 
 " Highlighting-related (no syntax-highlighting) stuffs
@@ -4383,11 +4438,7 @@ function! s:SetCurChanServ()
     {
       $Current_ChanServ = $bufnum;
       set_info($Current_Server, $INFO_UPDATE);
-
-      if (VIM::Eval('s:in_loop'))
-	{
-	  VIM::DoCommand('call s:HiliteBuffer()');
-	}
+      VIM::DoCommand('if s:in_loop|call s:HiliteBuffer()|endif');
     }
 }
 EOP
@@ -4473,11 +4524,11 @@ function! s:GetBufNum_Next(forward, cnt)
 	      unshift(@chanserv, $cref->{'bufnum'});
 	    }
 	}
-      foreach my $chat (@{$sref->{'chats'}})
+      foreach my $cref (@{$sref->{'chats'}})
 	{
-	  if ($chat->{'bufnum'} >= 0)
+	  if ($cref->{'bufnum'} >= 0)
 	    {
-	      unshift(@chanserv, $chat->{'bufnum'});
+	      unshift(@chanserv, $cref->{'bufnum'});
 	    }
 	}
     }
@@ -4622,7 +4673,7 @@ function! s:Cmd_SERVER(server)
   let pass = s:StrMatch(server, rx, '\3')
 
   if !port
-    let port = s:GetVimVar('b:port') + 0
+    let port = getbufvar(s:GetBufNum_Server(), 'port') + 0
     if port <= 0
       let port = 6667
     endif
@@ -4773,38 +4824,35 @@ function! s:Send_GQUIT(comd, args)
 endfunction
 
 function! s:Send_JOIN(comd, args)
+  " It's possible to do "/join 0,#newchan", to quit all current channels, and
+  " newly join the specified channel after that.
   perl <<EOP
 {
   my $chans = VIM::Eval('a:args');
 
-  if ($chans eq '0')
+  if (my ($chans, $keys) = ($chans =~ /^(\S+)(?:\s+(\S+))?$/))
     {
-      irc_send("JOIN %s", $chans);
-    }
-  else
-    {
-      my (@chans, @keys);
-
-      if (my ($chans, $keys) = ($chans =~ /^(\S+)(?:\s+(\S+))?$/))
-	{
-	  @chans = split(/,/, $chans);
-	  @keys  = split(/,/, $keys);
-	}
+      my @chans = split(/,/, $chans);
+      my @keys  = split(/,/, $keys);
 
       foreach my $chan (@chans)
 	{
-	  my $key = shift(@keys);
-
+	  my $key;
 	  if (is_chan($chan))
 	    {
+	      $key = shift(@keys);
 	      vim_open_chan($chan);
 
-	      unless (find_chan($chan))  # not joined yet
+	      if (find_chan($chan))
 		{
-		  irc_send("JOIN %s%s", $chan, ($key ? " $key" : ""));
+		  next;
+		}
+	      else
+		{
 		  add_chan($chan, $key);
 		}
 	    }
+	  irc_send("JOIN %s%s", $chan, ($key ? " $key" : ""));
 	}
     }
 }
@@ -4839,9 +4887,12 @@ function! s:Send_NAMES(comd, args)
     {
       foreach my $chan (split(/,/, $chans))
 	{
-	  if ($chan)
+	  if (is_chan($chan))
 	    {
-	      init_nicks($chan);
+	      if (find_chan($chan))
+		{
+		  init_nicks($chan);
+		}
 	      irc_send("%s %s", $comd, $chan);
 	    }
 	}
@@ -4923,9 +4974,9 @@ function! s:Send_QUIT(comd, args)
       vim_close_chan($cref->{'name'});
     }
 
-  foreach my $chat (@{$Current_Server->{'chats'}})
+  foreach my $cref (@{$Current_Server->{'chats'}})
     {
-      vim_close_chat($chat->{'nick'}, $Current_Server->{'server'});
+      vim_close_chat($cref->{'nick'}, $Current_Server->{'server'});
     }
 
   while (my $dcc = find_dccclient())
@@ -5376,11 +5427,11 @@ sub put_all_lines
 	}
     }
 
-  foreach my $chat (@{$sref->{'chats'}})
+  foreach my $cref (@{$sref->{'chats'}})
     {
-      if (has_lines($chat))
+      if (has_lines($cref))
 	{
-	  put_chat_lines($chat, $sref);
+	  put_chat_lines($cref, $sref);
 	}
     }
 }
@@ -5474,8 +5525,11 @@ sub post_put_lines
 
   if ($peek)
     {
-      set_info($cref, $INFO_HASNEW);
-      set_info($Current_Server, $INFO_UPDATE);
+      unless (has_info($cref, $INFO_HASNEW))
+	{
+	  set_info($cref, $INFO_HASNEW);
+	  set_info($Current_Server, $INFO_UPDATE);
+	}
       vim_peekbuf($orgw);
     }
   else
@@ -5672,19 +5726,19 @@ sub update_info
 				      $sref->{'server'}));
 	    }
 
-	  foreach my $chat (@{$sref->{'chats'}})
+	  foreach my $cref (@{$sref->{'chats'}})
 	    {
 	      $curbuf->Append($curbuf->Count(),
 			      sprintf(" %s[%d]%s\t\t\t%s",
-				      is_current($chat)
+				      is_current($cref)
 					? '*'
-					: has_info($chat, $INFO_HASNEW)
+					: has_info($cref, $INFO_HASNEW)
 					    ? '+'
-					    : $dead && index($chat->{'nick'},
-									  '=')
+					    : $dead
+					      && index($cref->{'nick'}, '=')
 						? '-' : ' ',
-				      $chat->{'bufnum'},
-				      $chat->{'nick'},
+				      $cref->{'bufnum'},
+				      $cref->{'nick'},
 				      $sref->{'server'}));
 	    }
 
@@ -5727,6 +5781,17 @@ sub unset_info
       $sref->{'info'} &= ~$info;
     }
 }
+
+# Make it noticeable that a hidden channel has got a new message
+#sub refresh_chans
+#{
+#  my ($chans, $cref) = @_;
+#
+#  while ($chans->[0] != $cref)
+#    {
+#      push(@{$chans}, shift(@{$chans}));
+#    }
+#}
 
 #
 # Timer
@@ -5890,10 +5955,7 @@ sub ctcp_query_action
   elsif (is_me($chan))
     {
       irc_chat_line($from, "*%s*: %s", $from, ${$mesg});
-      unless ($Current_Server->{'away'})
-	{
-	  vim_beep(1);
-	}
+      vim_beep(1);
     }
 }
 
@@ -6274,7 +6336,7 @@ sub dcc_chat_line
 
   dcc_parse_line($cref, $dcc, $itsme);
 
-  unless ($dcc->{'iserver'}->{'away'} || $itsme)
+  unless ($itsme)
     {
       vim_beep(1);
     }
@@ -6986,7 +7048,7 @@ sub process_umode
     }
 
   irc_chan_line('', "*: Your user modes: %s", $Current_Server->{'umode'});
-  VIM::DoCommand("call s:SetUserMode(\"$Current_Server->{'umode'}\")");
+  vim_setumode($Current_Server->{'umode'});
 }
 
 sub process_cmode
@@ -7151,11 +7213,10 @@ sub find_chan
       # Correct me if it is wrong.
       foreach my $cref (@{$sref->{'chans'}})
 	{
-	  if ($chan && lc($chan) ne lc($cref->{'name'}))
+	  if (lc($cref->{'name'}) eq lc($chan))
 	    {
-	      next;
+	      return $cref;
 	    }
-	  return $cref;
 	}
     }
 
@@ -7207,7 +7268,7 @@ sub find_list
 
 sub is_me
 {
-  return ($_[0] eq $Current_Server->{'nick'});
+  return (lc($_[0]) eq lc($Current_Server->{'nick'}));
 }
 
 sub get_nicks
@@ -7514,20 +7575,20 @@ sub identify_nick
 sub add_chat
 {
   my ($nick, $sref) = @_;
-  my $chat;
+  my $cref;
 
   if (my $chats = $sref->{'chats'})
     {
-      $chat = { nick  => $nick,
+      $cref = { nick  => $nick,
 		info  => 0,
 		bufnum=> -1,
 		lines => []
 	      };
-      push(@{$chats}, $chat);
+      push(@{$chats}, $cref);
       set_info($sref, $INFO_UPDATE);
     }
 
-  return $chat;
+  return $cref;
 }
 
 sub find_chat
@@ -7539,11 +7600,11 @@ sub find_chat
       $sref = $Current_Server;
     }
 
-  foreach my $chat (@{$sref->{'chats'}})
+  foreach my $cref (@{$sref->{'chats'}})
     {
-      if ($chat->{'nick'} eq $nick)
+      if (lc($cref->{'nick'}) eq lc($nick))
 	{
-	  return $chat;
+	  return $cref;
 	}
     }
 
@@ -7554,11 +7615,16 @@ sub del_chat
 {
   my ($nick, $sref) = @_;
 
+  unless ($sref)
+    {
+      $sref = $Current_Server;
+    }
+
   if (my $chats = $sref->{'chats'})
     {
       for (my $i = 0; $i <= $#{$chats}; $i++)
 	{
-	  if ($chats->[$i]->{'nick'} eq $nick)
+	  if (lc($chats->[$i]->{'nick'}) eq lc($nick))
 	    {
 	      splice(@{$chats}, $i, 1);
 	      set_info($sref, $INFO_UPDATE);
@@ -7751,7 +7817,7 @@ sub parse_number
       if ($mesg =~ /^(\+\S*)/)
 	{
 	  irc_chan_line('', "*: Your user modes: %s", $1);
-	  VIM::DoCommand("call s:SetUserMode(\"$1\")");
+	  vim_setumode($1);
 	}
     }
   elsif ($comd >= 250 && $comd <= 259)  # RPL_LUSERCLIENT etc.
@@ -7988,7 +8054,7 @@ sub parse_number
 	  unless (is_me($to))
 	    {
 	      $Current_Server->{'nick'} = $to;
-	      VIM::DoCommand("call s:SetUserMode('')");
+	      vim_setumode();
 	    }
 	  post_login_server($Current_Server);
 	}
@@ -8002,7 +8068,16 @@ sub parse_number
       irc_chan_line('', $mesg);
       unless ($Current_Server->{'conn'} & $CS_LOGIN)
 	{
-	  $Current_Server->{'nick'} .= '_';
+	  if ($comd == 432)
+	    {
+	      $Current_Server->{'nick'} .= '_';
+	    }
+	  else
+	    {
+	      vim_beep(1);
+	      $Current_Server->{'nick'} = VIM::Eval("s:Input('Enter new nick')");
+	    }
+	  vim_setumode();
 	  irc_send("NICK %s", $Current_Server->{'nick'});
 	}
     }
@@ -8247,13 +8322,11 @@ sub p_privmsg
 	    {
 	      irc_chan_line($chan, "<%s%s>: %s", $pref, $from, $mesg);
 	    }
-	  elsif (is_me($chan))
+	  else
 	    {
-	      irc_chat_line($from, "<%s>: %s", $from, $mesg);
-	      unless ($Current_Server->{'away'})
-		{
-		  vim_beep(1);
-		}
+	      &{'irc_cha'.(is_me($chan) ? 't' : 'n').'_line'}(
+					      $from, "<%s>: %s", $from, $mesg);
+	      vim_beep(1);
 	    }
 	}
     }
@@ -8455,7 +8528,12 @@ sub vim_confirm
 
 sub vim_beep
 {
-  VIM::DoCommand("call s:Beep($_[0])");
+  unless ($Current_Server->{'away'})
+    {
+      # XXX: Force it vomit lines, to notify user what is going wrong
+      put_serv_lines($Current_Server);
+      VIM::DoCommand("call s:Beep($_[0])");
+    }
 }
 
 sub vim_search
@@ -8472,6 +8550,11 @@ sub vim_gettime
 sub vim_get_serverumode
 {
   return scalar(VIM::Eval('s:GetServerUMODE()'));
+}
+
+sub vim_setumode
+{
+  VIM::DoCommand("call s:SetUserMode(\"$_[0]\")");
 }
 
 sub vim_open_serv
