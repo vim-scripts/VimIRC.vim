@@ -1,7 +1,7 @@
 " An IRC client plugin for Vim
 " Maintainer: Madoka Machitani <madokam@zag.att.ne.jp>
 " Created: Tue, 24 Feb 2004
-" Last Change: Fri, 15 Apr 2005 14:09:08 +0900 (JST)
+" Last Change: Sat, 16 Apr 2005 09:57:57 +0900 (JST)
 " License: Distributed under the same terms as Vim itself
 "
 " Credits:
@@ -346,7 +346,7 @@
 if exists('g:loaded_vimirc') || &compatible
   finish
 endif
-let s:version = '0.9.27'
+let s:version = '0.9.28'
 
 let s:debug = (s:version =~# '-devel$')
 if !s:debug
@@ -716,25 +716,31 @@ function! s:QuitWhat(severe)
     return s:QuitVimIRC()
   endif
 
+  let canceld= 0
   " NOTE: `server' could get invalid value
   let server = s:GetVimVar('b:server')
   let channel= s:GetVimVar('b:channel')
   call s:SetCurServer(server)
 
   if s:IsChannel(channel)
-    if s:Confirm_YN('Really close channel '.channel)
-      call s:Send_PART('PART', channel)
+    let canceld = !s:Confirm_YN('Really close channel '.channel)
+    if !canceld
+      return s:Send_PART('PART', channel)
     endif
   elseif s:IsNick(channel)
-    if s:Confirm_YN('Really quit chat with '.channel)
-      call s:QuitChat(channel)
+    let canceld = !s:Confirm_YN('Really quit chat with '.channel)
+    if !canceld
+      return s:QuitChat(channel)
     endif
-  elseif s:IsConnected()
-    if s:Confirm_YN('Really disconnect with server '.s:server)
+  endif
+
+  if s:IsConnected()
+    if s:Confirm_YN((canceld ? 'Then,'
+	  \		     : 'Really').' disconnect with server '.s:server)
       call s:Send_QUIT('QUIT', '')
     endif
   else
-    if s:Confirm_YN('Really quit VimIRC')
+    if s:Confirm_YN((canceld ? 'Then,' : 'Really').' quit VimIRC')
       call s:QuitVimIRC()
     endif
   endif
@@ -1446,12 +1452,10 @@ function! s:PostOpenBuf_Chat()
   let nick  = getbufvar(abuf, 'channel')
   let server= getbufvar(abuf, 'server')
   if strlen(nick) && strlen(server)
-    " Need to set the current server before opening the nicks window, to
-    " obtain a proper nick
-    call s:ResetCurChanServ(nick, server)
     call s:OpenBuf_Nicks(nick, server)
     call s:OpenBuf_Command(0)
     call s:BufVisit(abuf)
+    call s:ResetCurChanServ(nick, server)
   endif
 endfunction
 
@@ -1605,9 +1609,9 @@ function! s:DoSyntax()
   highlight link VimIRCUserAction   WarningMsg
   highlight link VimIRCUserQuery    Question
   highlight link VimIRCUnderline    Underlined
-  highlight VimIRCBold	  gui=bold term=bold
   " FIXME: This doesn't work
   highlight link VimIRCIgnore	    Ignore
+  highlight VimIRCBold	gui=bold cterm=bold term=bold
 endfunction
 
 function! s:DoSyntax_Info()
@@ -1641,6 +1645,7 @@ endfunction
 
 function! s:DoSyntax_Channel()
   call s:DoSyntax()
+  " FIXME: Highlight for chanops disappears sometimes after buffer reopen, why?
   syntax match VimIRCChanEnter display "->" contained containedin=VimIRCUserHead
   syntax match VimIRCChanExit display "<[-=]" contained containedin=VimIRCUserHead
   syntax match VimIRCChanPriv display "[@+]" contained containedin=@VimIRCUserName
@@ -1747,7 +1752,7 @@ function! s:InitBuf_Nicks(bufname, channel, server)
 
   call s:SetBufNum(a:bufname)
   if s:IsNick(a:channel)
-    call s:FillBuf_Nicks(a:channel)
+    call s:FillBuf_Nicks(a:channel, a:server)
   endif
 endfunction
 
@@ -1767,11 +1772,11 @@ function! s:InitBuf_Command(bufname, channel)
   call s:SetBufNum(a:bufname)
 endfunction
 
-function! s:FillBuf_Nicks(nick)
+function! s:FillBuf_Nicks(nick, server)
   call s:ModifyBuf(1)
   call s:BufClear()
   call setline(1, a:nick)
-  call append(1, s:GetCurNick())
+  call append(1, s:GetCurNick(a:server))
   call s:ModifyBuf(0)
 endfunction
 
@@ -3120,7 +3125,9 @@ function! s:DoAutoJoin()
   while strlen(autojoin)
     let channel = s:StrDivide(autojoin, 1)
     if channel ==? 'list'
-      call s:Send_LIST('LIST', '')
+      if s:GetBufNum_List() < 0
+	call s:Send_LIST('LIST', '')
+      endif
     else
       call s:Send_JOIN('JOIN', substitute(channel, ':', ' ', ''))
     endif
@@ -4571,14 +4578,16 @@ EOP
   return bufnum
 endfunction
 
-function! s:GetCurNick()
+function! s:GetCurNick(...)
   perl <<EOP
 {
   my $nick;
+  my $sref = VIM::Eval('a:0') ? find_server(scalar(VIM::Eval('a:1')))
+			      : $Current_Server;
 
-  if (exists($Current_Server->{'nick'}) && $Current_Server->{'nick'})
+  if (exists($sref->{'nick'}) && $sref->{'nick'})
     {
-      $nick = $Current_Server->{'nick'};
+      $nick = $sref->{'nick'};
     }
   else
     {
@@ -5185,7 +5194,7 @@ sub close_server
 
       if ($sref->{'conn'} & $CS_QUIT)
 	{
-	  $sref->{'timers'} = [];
+	  @{$sref->{'timers'}} = ();
 	}
 
       conn_close($sref);
@@ -8068,7 +8077,7 @@ sub parse_number
       irc_chan_line('', $mesg);
       unless ($Current_Server->{'conn'} & $CS_LOGIN)
 	{
-	  if ($comd == 432)
+	  if ($comd == 433)
 	    {
 	      $Current_Server->{'nick'} .= '_';
 	    }
@@ -8531,7 +8540,10 @@ sub vim_beep
   unless ($Current_Server->{'away'})
     {
       # XXX: Force it vomit lines, to notify user what is going wrong
-      put_serv_lines($Current_Server);
+      if (has_lines($Current_Server))
+	{
+	  put_serv_lines($Current_Server);
+	}
       VIM::DoCommand("call s:Beep($_[0])");
     }
 }
